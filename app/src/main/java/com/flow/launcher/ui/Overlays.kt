@@ -1,10 +1,5 @@
 package com.flow.launcher.ui
 
-import android.app.Activity
-import android.app.role.RoleManager
-import android.content.Intent
-import android.os.Build
-import android.provider.Settings
 import androidx.compose.animation.*
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -16,9 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -35,14 +28,14 @@ import androidx.core.graphics.drawable.toBitmap
 import com.flow.launcher.*
 
 @Composable
-private fun <T : Any> rememberLast(value: T?): T? {
+internal fun <T : Any> rememberLast(value: T?): T? {
     var last by remember { mutableStateOf(value) }
     LaunchedEffect(value) { if (value != null) last = value }
     return value ?: last
 }
 
 @Composable
-private fun noRipple() = remember { MutableInteractionSource() }
+internal fun noRipple() = remember { MutableInteractionSource() }
 
 // ---------------- Folder ----------------
 @Composable
@@ -87,7 +80,8 @@ fun FolderOverlay(vm: LauncherViewModel) {
         }
         if (renaming) {
             RenameDialog(f.name, onDismiss = { renaming = false }) {
-                vm.renameFolder(f.id, it); renaming = false
+                vm.renameFolder(f.id, it)
+                renaming = false
             }
         }
     }
@@ -110,6 +104,7 @@ private fun RenameDialog(initial: String, onDismiss: () -> Unit, onSave: (String
 fun ContextMenuOverlay(vm: LauncherViewModel) {
     val target = rememberLast(vm.menu)
     val ctx = LocalContext.current
+    val widgets = LocalWidgets.current
     AnimatedVisibility(
         vm.menu != null,
         enter = fadeIn(tween(150)) + slideInVertically(tween(220)) { it / 8 },
@@ -121,9 +116,21 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
             is MenuTarget.DockApp -> t.app
             is MenuTarget.DrawerApp -> t.app
             is MenuTarget.FolderApp -> t.app
+            is MenuTarget.PrivateApp -> t.app
             is MenuTarget.HomeFolder -> null
+            is MenuTarget.HomeWidget -> null
         }
         val shortcuts = remember(app) { app?.let { vm.repo.shortcuts(it) }.orEmpty() }
+        val widgetLabel = remember(t) {
+            (t as? MenuTarget.HomeWidget)?.let {
+                widgets?.manager?.getAppWidgetInfo(it.widget.appWidgetId)?.loadLabel(ctx.packageManager)
+            }
+        }
+        val title = when (t) {
+            is MenuTarget.HomeFolder -> t.folder.name
+            is MenuTarget.HomeWidget -> "${widgetLabel ?: "Widget"}  ·  ${t.widget.spanX} × ${t.widget.spanY}"
+            else -> app?.label ?: ""
+        }
 
         Box(
             Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f))
@@ -138,13 +145,10 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
             ) {
                 Row(Modifier.padding(horizontal = 18.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (app != null) {
-                        Image(app.icon, null, Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)))
+                        Image(app.icon, null, Modifier.size(40.dp).clip(LocalIconShape.current))
                         Spacer(Modifier.width(12.dp))
                     }
-                    Text(
-                        app?.label ?: (t as MenuTarget.HomeFolder).folder.name,
-                        color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
-                    )
+                    Text(title, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 }
                 shortcuts.forEach { sc ->
                     key(sc.id) {
@@ -159,8 +163,10 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                     }
                 }
                 if (shortcuts.isNotEmpty()) {
-                    Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp).height(1.dp)
-                        .background(Color.White.copy(alpha = 0.15f)))
+                    Box(
+                        Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp).height(1.dp)
+                            .background(Color.White.copy(alpha = 0.15f))
+                    )
                 }
                 when (t) {
                     is MenuTarget.HomeApp -> {
@@ -169,7 +175,7 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                         if (vm.settings.drawerMode) {
                             MenuRow("Remove from home screen") { vm.removeFromHome(t.page, t.index) }
                         }
-                        MenuRow("Hide app") { vm.hide(t.app.key) }
+                        MenuRow("Move to private space") { vm.hide(t.app.key) }
                         MenuRow("App info") { vm.appInfo(t.app) }
                         MenuRow("Uninstall", danger = true) { vm.uninstall(t.app) }
                     }
@@ -190,7 +196,7 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                         if (vm.settings.drawerMode) {
                             MenuRow("Add to home screen") { vm.addToHome(t.app.key) }
                         }
-                        MenuRow("Hide app") { vm.hide(t.app.key) }
+                        MenuRow("Move to private space") { vm.hide(t.app.key) }
                         MenuRow("App info") { vm.appInfo(t.app) }
                         MenuRow("Uninstall", danger = true) { vm.uninstall(t.app) }
                     }
@@ -198,6 +204,23 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                         MenuRow("Remove from folder") { vm.removeFromFolder(t.folderId, t.app.key) }
                         MenuRow("App info") { vm.appInfo(t.app) }
                         MenuRow("Uninstall", danger = true) { vm.uninstall(t.app) }
+                    }
+                    is MenuTarget.PrivateApp -> {
+                        MenuRow("Move out of private space") { vm.unhide(t.app.key); vm.menu = null }
+                        MenuRow("App info") { vm.appInfo(t.app) }
+                        MenuRow("Uninstall", danger = true) { vm.uninstall(t.app) }
+                    }
+                    is MenuTarget.HomeWidget -> {
+                        val id = t.widget.appWidgetId
+                        MenuRow("Make wider") { vm.resizeWidget(id, 1, 0) }
+                        MenuRow("Make narrower") { vm.resizeWidget(id, -1, 0) }
+                        MenuRow("Make taller") { vm.resizeWidget(id, 0, 1) }
+                        MenuRow("Make shorter") { vm.resizeWidget(id, 0, -1) }
+                        MenuRow("Move to next page") { vm.moveWidgetToNextPage(id) }
+                        MenuRow("Remove widget", danger = true) {
+                            vm.removeWidget(id)
+                            widgets?.delete(id)
+                        }
                     }
                 }
             }
@@ -217,99 +240,4 @@ private fun MenuRow(text: String, icon: ImageBitmap? = null, danger: Boolean = f
         }
         Text(text, color = if (danger) Color(0xFFFF7A7A) else Color.White, fontSize = 15.sp)
     }
-}
-
-// ---------------- Settings ----------------
-@Composable
-fun SettingsPanel(vm: LauncherViewModel) {
-    val s = vm.settings
-    val ctx = LocalContext.current
-    Box(
-        Modifier.fillMaxSize().clickable(interactionSource = noRipple(), indication = null) { vm.showSettings = false },
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(
-            Modifier.systemBarsPadding().padding(20.dp).fillMaxWidth()
-                .glass(RoundedCornerShape(30.dp), 0.18f)
-                .clickable(interactionSource = noRipple(), indication = null) {}
-                .verticalScroll(rememberScrollState())
-                .padding(22.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text("Home screen", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
-
-            Text("Home screen mode", color = Color.White, fontSize = 15.sp)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                GlassPill("Drawer", Modifier.weight(1f), selected = s.drawerMode) {
-                    vm.updateSettings(s.copy(drawerMode = true))
-                }
-                GlassPill("Standard", Modifier.weight(1f), selected = !s.drawerMode) {
-                    vm.updateSettings(s.copy(drawerMode = false))
-                }
-            }
-
-
-            Choice("Columns", listOf(4, 5), s.cols) { vm.updateSettings(s.copy(cols = it)) }
-            Choice("Rows", listOf(5, 6, 7), s.rows) { vm.updateSettings(s.copy(rows = it)) }
-
-            Column {
-                Text("Icon size", color = Color.White, fontSize = 15.sp)
-                Slider(s.iconScale, { vm.updateSettings(s.copy(iconScale = it)) }, valueRange = 0.8f..1.25f)
-            }
-
-            Toggle("Show app names", s.showLabels) { vm.updateSettings(s.copy(showLabels = it)) }
-            Toggle("Frosted glass blur", s.blur) { vm.updateSettings(s.copy(blur = it)) }
-            Toggle("Double-tap to lock", s.doubleTapLock) { vm.updateSettings(s.copy(doubleTapLock = it)) }
-            Toggle("Flow clock on home screen", vm.layout.clock.visible) { vm.setClockVisible(it) }
-
-            GlassPill("Auto-organize by category", Modifier.fillMaxWidth()) {
-                vm.organizeByCategory(); vm.showSettings = false
-            }
-            GlassPill("Set as default launcher", Modifier.fillMaxWidth()) {
-                (ctx as? Activity)?.let { requestDefaultLauncher(it) }
-            }
-
-            if (s.hidden.isNotEmpty()) {
-                Text("Hidden apps", color = Color.White, fontSize = 17.sp, fontWeight = FontWeight.Medium)
-                s.hidden.mapNotNull { vm.appMap[it] }.forEach { app ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Image(app.icon, null, Modifier.size(32.dp).clip(RoundedCornerShape(9.dp)))
-                        Spacer(Modifier.width(12.dp))
-                        Text(app.label, color = Color.White, modifier = Modifier.weight(1f))
-                        TextButton({ vm.unhide(app.key) }) { Text("Unhide") }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun Choice(label: String, options: List<Int>, current: Int, onPick: (Int) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            options.forEach { o -> GlassPill("$o", selected = o == current) { onPick(o) } }
-        }
-    }
-}
-
-@Composable
-private fun Toggle(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
-        Switch(checked, onChange)
-    }
-}
-
-@Suppress("DEPRECATION")
-private fun requestDefaultLauncher(activity: Activity) {
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        val rm = activity.getSystemService(RoleManager::class.java)
-        if (rm.isRoleAvailable(RoleManager.ROLE_HOME) && !rm.isRoleHeld(RoleManager.ROLE_HOME)) {
-            activity.startActivityForResult(rm.createRequestRoleIntent(RoleManager.ROLE_HOME), 7)
-            return
-        }
-    }
-    activity.startActivity(Intent(Settings.ACTION_HOME_SETTINGS))
 }

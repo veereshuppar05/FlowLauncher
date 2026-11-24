@@ -2,7 +2,6 @@ package com.flow.launcher.ui
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -11,6 +10,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -20,6 +20,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -27,6 +28,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.flow.launcher.AppInfo
 import com.flow.launcher.HomeItem
+import com.flow.launcher.IconShape
+import com.flow.launcher.WidgetController
+
+val LocalIconShape = staticCompositionLocalOf<Shape> { RoundedCornerShape(30) }
+val LocalBadges = compositionLocalOf<Map<String, Int>> { emptyMap() }
+val LocalWidgets = staticCompositionLocalOf<WidgetController?> { null }
+
+fun IconShape.toShape(): Shape = when (this) {
+    IconShape.SQUIRCLE -> RoundedCornerShape(30)
+    IconShape.CIRCLE -> CircleShape
+    IconShape.SQUARE -> RoundedCornerShape(12)
+    IconShape.TEARDROP -> RoundedCornerShape(50, 50, 50, 12)
+}
 
 /** Frosted panel with a soft top-lit edge ("contour glow"). */
 fun Modifier.glass(shape: Shape, tint: Float = 0.14f): Modifier = this
@@ -40,7 +54,6 @@ val LabelStyle = TextStyle(
     shadow = Shadow(Color.Black.copy(alpha = 0.55f), Offset(0f, 1f), 6f),
 )
 
-/** Springy squish on press. */
 @Composable
 private fun bounceScale(interaction: MutableInteractionSource): Float {
     val pressed by interaction.collectIsPressedAsState()
@@ -52,7 +65,25 @@ private fun bounceScale(interaction: MutableInteractionSource): Float {
     return scale
 }
 
-@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun NotifDot(count: Int, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .defaultMinSize(minWidth = 18.dp, minHeight = 18.dp)
+            .clip(CircleShape)
+            .background(Color(0xFFFF4D4F))
+            .border(1.5.dp, Color.White.copy(alpha = 0.9f), CircleShape)
+            .padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            if (count > 99) "99+" else "$count",
+            color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun AppIcon(
     app: AppInfo,
@@ -64,6 +95,7 @@ fun AppIcon(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val scale = bounceScale(interaction)
+    val count = LocalBadges.current[app.packageName] ?: 0
     Column(
         modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
@@ -75,7 +107,10 @@ fun AppIcon(
             ),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Image(app.icon, app.label, Modifier.size(iconSize).clip(RoundedCornerShape(iconSize * 0.3f)))
+        Box {
+            Image(app.icon, app.label, Modifier.size(iconSize).clip(LocalIconShape.current))
+            if (count > 0) NotifDot(count, Modifier.align(Alignment.TopEnd).offset(x = 5.dp, y = (-5).dp))
+        }
         if (showLabel) {
             Spacer(Modifier.height(5.dp))
             Text(
@@ -96,27 +131,31 @@ fun FolderIcon(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val scale = bounceScale(interaction)
+    val badges = LocalBadges.current
+    val count = folder.apps.sumOf { key -> apps[key]?.let { badges[it.packageName] } ?: 0 }
     val mini = (iconSize * 0.74f - 4.dp) / 2
+    val shape = LocalIconShape.current
     Column(
         Modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clickable(interactionSource = interaction, indication = null, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Box(
-            Modifier.size(iconSize)
-                .glass(RoundedCornerShape(iconSize * 0.3f), 0.24f)
-                .padding(iconSize * 0.13f)
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                folder.apps.take(4).mapNotNull { apps[it] }.chunked(2).forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        row.forEach {
-                            Image(it.icon, null, Modifier.size(mini).clip(RoundedCornerShape(mini * 0.3f)))
+        Box {
+            Box(
+                Modifier.size(iconSize)
+                    .glass(RoundedCornerShape(iconSize * 0.3f), 0.24f)
+                    .padding(iconSize * 0.13f)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    folder.apps.take(4).mapNotNull { apps[it] }.chunked(2).forEach { row ->
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            row.forEach { Image(it.icon, null, Modifier.size(mini).clip(shape)) }
                         }
                     }
                 }
             }
+            if (count > 0) NotifDot(count, Modifier.align(Alignment.TopEnd).offset(x = 5.dp, y = (-5).dp))
         }
         if (showLabel) {
             Spacer(Modifier.height(5.dp))
@@ -139,6 +178,6 @@ fun GlassPill(
             .padding(horizontal = 16.dp, vertical = 11.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, color = Color.White, fontSize = 14.sp, maxLines = 1)
+        Text(text, color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }

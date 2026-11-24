@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.content.pm.ShortcutInfo
 import android.os.Handler
 import android.os.Looper
+import android.os.Process
 import android.os.UserHandle
 import android.os.UserManager
 import android.provider.MediaStore
@@ -25,21 +26,31 @@ class LauncherRepo(private val ctx: Context) {
     private val settingsPrefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private var callback: LauncherApps.Callback? = null
 
-    fun loadApps(): List<AppInfo> = users.userProfiles.flatMap { user ->
-        launcherApps.getActivityList(null, user).map { info ->
-            val category = ApplicationInfo.getCategoryTitle(ctx, info.applicationInfo.category)
-                ?.toString() ?: "Other"
-            AppInfo(
-                key = "${info.componentName.flattenToShortString()}#${users.getSerialNumberForUser(user)}",
-                label = info.label.toString(),
-                packageName = info.componentName.packageName,
-                component = info.componentName,
-                user = user,
-                icon = info.getBadgedIcon(0).toBitmap(144, 144).asImageBitmap(),
-                category = category,
-            )
-        }
-    }.filter { it.packageName != ctx.packageName }.sortedBy { it.label.lowercase() }
+    fun loadApps(iconPack: String?): List<AppInfo> {
+        val pack = iconPack?.let { IconPacks.load(ctx, it) }
+        val me = Process.myUserHandle()
+        return users.userProfiles.flatMap { user ->
+            launcherApps.getActivityList(null, user).map { info ->
+                val packIcon = pack?.iconFor(info.componentName)
+                val drawable = when {
+                    packIcon == null -> info.getBadgedIcon(0)
+                    user == me -> packIcon
+                    else -> ctx.packageManager.getUserBadgedIcon(packIcon, user)
+                }
+                val category = ApplicationInfo.getCategoryTitle(ctx, info.applicationInfo.category)
+                    ?.toString() ?: "Other"
+                AppInfo(
+                    key = "${info.componentName.flattenToShortString()}#${users.getSerialNumberForUser(user)}",
+                    label = info.label.toString(),
+                    packageName = info.componentName.packageName,
+                    component = info.componentName,
+                    user = user,
+                    icon = drawable.toBitmap(144, 144).asImageBitmap(),
+                    category = category,
+                )
+            }
+        }.filter { it.packageName != ctx.packageName }.sortedBy { it.label.lowercase() }
+    }
 
     fun defaultDockPackages(): List<String> {
         val pm = ctx.packageManager
@@ -52,7 +63,7 @@ class LauncherRepo(private val ctx: Context) {
             .filter { it != "android" }
     }
 
-    // ---------- layout persistence ----------
+    // ---------- layout ----------
     fun saveLayout(l: LayoutState) {
         val pages = JSONArray()
         l.pages.forEach { page ->
@@ -69,10 +80,17 @@ class LauncherRepo(private val ctx: Context) {
             }
             pages.put(arr)
         }
+        val widgets = JSONArray()
+        l.widgets.forEach { w ->
+            widgets.put(
+                JSONObject().put("id", w.appWidgetId).put("p", w.page).put("c", w.col)
+                    .put("r", w.row).put("x", w.spanX).put("y", w.spanY)
+            )
+        }
         val clock = JSONObject().put("x", l.clock.x.toDouble()).put("y", l.clock.y.toDouble())
             .put("s", l.clock.scale.toDouble()).put("v", l.clock.visible)
         val json = JSONObject().put("pages", pages).put("dock", JSONArray(l.dock))
-            .put("known", JSONArray(l.known.toList())).put("clock", clock)
+            .put("known", JSONArray(l.known.toList())).put("clock", clock).put("widgets", widgets)
         layoutPrefs.edit().putString("layout", json.toString()).apply()
     }
 
@@ -92,6 +110,11 @@ class LauncherRepo(private val ctx: Context) {
                     }
                 }
             }
+            val wj = j.optJSONArray("widgets") ?: JSONArray()
+            val widgets = (0 until wj.length()).map { i ->
+                val o = wj.getJSONObject(i)
+                WidgetItem(o.getInt("id"), o.getInt("p"), o.getInt("c"), o.getInt("r"), o.getInt("x"), o.getInt("y"))
+            }
             val c = j.getJSONObject("clock")
             LayoutState(
                 pages = pages,
@@ -101,6 +124,7 @@ class LauncherRepo(private val ctx: Context) {
                     c.getDouble("s").toFloat(), c.getBoolean("v"),
                 ),
                 known = j.getJSONArray("known").strings().toSet(),
+                widgets = widgets,
             )
         }.getOrNull()
     }
@@ -115,22 +139,31 @@ class LauncherRepo(private val ctx: Context) {
             iconScale = getFloat("iconScale", 1f),
             showLabels = getBoolean("labels", true),
             blur = getBoolean("blur", true),
-            doubleTapLock = getBoolean("dtLock", true),
             hidden = getStringSet("hidden", emptySet())!!.toSet(),
             drawerMode = getBoolean("drawer", true),
+            iconPack = getString("pack", null),
+            iconShape = IconShape.entries.firstOrNull { it.name == getString("shape", null) } ?: IconShape.SQUIRCLE,
+            badges = getBoolean("badges", true),
+            lockPrivate = getBoolean("lockPrivate", true),
+            gestures = Gesture.entries.associateWith { g ->
+                val saved = getString("g_${g.name}", null)
+                GestureAction.entries.firstOrNull { it.name == saved } ?: g.default
+            },
         )
     }
 
     fun saveSettings(s: LauncherSettings) {
-        settingsPrefs.edit()
+        val e = settingsPrefs.edit()
             .putInt("cols", s.cols).putInt("rows", s.rows).putFloat("iconScale", s.iconScale)
             .putBoolean("labels", s.showLabels).putBoolean("blur", s.blur)
-            .putBoolean("dtLock", s.doubleTapLock).putStringSet("hidden", s.hidden)
-            .putBoolean("drawer", s.drawerMode)
-            .apply()
+            .putStringSet("hidden", s.hidden).putBoolean("drawer", s.drawerMode)
+            .putString("pack", s.iconPack).putString("shape", s.iconShape.name)
+            .putBoolean("badges", s.badges).putBoolean("lockPrivate", s.lockPrivate)
+        s.gestures.forEach { (g, a) -> e.putString("g_${g.name}", a.name) }
+        e.apply()
     }
 
-    // ---------- on-device smart suggestions ----------
+    // ---------- on-device suggestions ----------
     fun recordLaunch(key: String) {
         val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
         usagePrefs.edit()
@@ -147,7 +180,7 @@ class LauncherRepo(private val ctx: Context) {
         }.filter { it.second > 0 }.sortedByDescending { it.second }.take(count).map { it.first }
     }
 
-    // ---------- app shortcuts ----------
+    // ---------- shortcuts ----------
     fun shortcuts(app: AppInfo): List<ShortcutInfo> = runCatching {
         if (!launcherApps.hasShortcutHostPermission()) return emptyList()
         val q = LauncherApps.ShortcutQuery()

@@ -1,5 +1,7 @@
 package com.flow.launcher.ui
 
+import android.accessibilityservice.AccessibilityService
+import android.app.Activity
 import android.content.Intent
 import android.provider.AlarmClock
 import android.text.format.DateFormat
@@ -24,9 +26,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.*
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -39,77 +44,218 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
+// ======================= Root =======================
 @Composable
-fun LauncherRoot(vm: LauncherViewModel, setWindowBlur: (Int) -> Unit) {
+fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur: (Int) -> Unit) {
+    val activity = LocalContext.current as Activity
+    val badgeCounts by BadgeService.counts.collectAsState()
     MaterialTheme(colorScheme = darkColorScheme()) {
-        val overlay = vm.drawerOpen || vm.openFolderId != null || vm.showSettings
-        val blur by animateFloatAsState(if (overlay) 1f else 0f, tween(300), label = "blur")
-        LaunchedEffect(blur, vm.settings.blur) {
-            setWindowBlur(if (vm.settings.blur) (blur * 80).toInt() else 0)
-        }
-        Box(Modifier.fillMaxSize()) {
-            HomeScreen(
-                vm,
-                Modifier.fillMaxSize()
-                    .graphicsLayer {
-                        val s = 1f - 0.08f * blur
-                        scaleX = s; scaleY = s; alpha = 1f - 0.5f * blur
-                    }
-                    .then(if (vm.settings.blur && blur > 0.01f) Modifier.blur((20 * blur).dp) else Modifier),
-            )
-            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f * blur)))
+        CompositionLocalProvider(
+            LocalIconShape provides vm.settings.iconShape.toShape(),
+            LocalBadges provides (if (vm.settings.badges) badgeCounts else emptyMap()),
+            LocalWidgets provides widgets,
+        ) {
+            val overlay = vm.drawerOpen || vm.openFolderId != null || vm.showSettings ||
+                vm.widgetPickerOpen || vm.privateOpen
+            val blur by animateFloatAsState(if (overlay) 1f else 0f, tween(300), label = "blur")
+            LaunchedEffect(blur, vm.settings.blur) {
+                setWindowBlur(if (vm.settings.blur) (blur * 80).toInt() else 0)
+            }
+            Box(Modifier.fillMaxSize()) {
+                HomeScreen(
+                    vm,
+                    Modifier.fillMaxSize()
+                        .graphicsLayer {
+                            val s = 1f - 0.08f * blur
+                            scaleX = s; scaleY = s; alpha = 1f - 0.5f * blur
+                        }
+                        .then(if (vm.settings.blur && blur > 0.01f) Modifier.blur((20 * blur).dp) else Modifier),
+                ) { g -> performAction(vm.settings.gestures[g] ?: GestureAction.NONE, activity, vm) }
 
-            AnimatedVisibility(
-                vm.drawerOpen,
-                enter = fadeIn(tween(220)) + slideInVertically(tween(320)) { it / 4 },
-                exit = fadeOut(tween(180)) + slideOutVertically(tween(260)) { it / 4 },
-            ) { AppDrawer(vm) }
+                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f * blur)))
 
-            FolderOverlay(vm)
+                AnimatedVisibility(
+                    vm.drawerOpen,
+                    enter = fadeIn(tween(220)) + slideInVertically(tween(320)) { it / 4 },
+                    exit = fadeOut(tween(180)) + slideOutVertically(tween(260)) { it / 4 },
+                ) { AppDrawer(vm) }
 
-            AnimatedVisibility(
-                vm.showSettings,
-                enter = fadeIn() + scaleIn(initialScale = 0.92f),
-                exit = fadeOut() + scaleOut(targetScale = 0.92f),
-            ) { SettingsPanel(vm) }
+                FolderOverlay(vm)
 
-            ContextMenuOverlay(vm)
+                AnimatedVisibility(
+                    vm.privateOpen,
+                    enter = fadeIn() + scaleIn(initialScale = 0.9f),
+                    exit = fadeOut() + scaleOut(targetScale = 0.9f),
+                ) { PrivateSpaceOverlay(vm) }
+
+                AnimatedVisibility(
+                    vm.widgetPickerOpen,
+                    enter = fadeIn() + slideInVertically { it / 5 },
+                    exit = fadeOut() + slideOutVertically { it / 5 },
+                ) { WidgetPicker(vm, widgets) }
+
+                AnimatedVisibility(
+                    vm.showSettings,
+                    enter = fadeIn() + scaleIn(initialScale = 0.92f),
+                    exit = fadeOut() + scaleOut(targetScale = 0.92f),
+                ) { SettingsPanel(vm) }
+
+                vm.drag?.let { DragGhost(vm, it) }
+
+                ContextMenuOverlay(vm)
+            }
         }
     }
 }
 
+// ======================= Gesture actions =======================
+fun performAction(action: GestureAction, activity: Activity, vm: LauncherViewModel) {
+    when (action) {
+        GestureAction.NONE -> {}
+        GestureAction.DRAWER -> vm.drawerOpen = true
+        GestureAction.NOTIFICATIONS -> vm.expandNotifications()
+        GestureAction.QUICK_SETTINGS -> vm.expandQuickSettings()
+        GestureAction.LOCK -> LockService.perform(activity, AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN)
+        GestureAction.RECENTS -> LockService.perform(activity, AccessibilityService.GLOBAL_ACTION_RECENTS)
+        GestureAction.SCREENSHOT -> LockService.perform(activity, AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT)
+        GestureAction.POWER_MENU -> LockService.perform(activity, AccessibilityService.GLOBAL_ACTION_POWER_DIALOG)
+        GestureAction.PRIVATE_SPACE -> openPrivateSpace(activity, vm)
+        GestureAction.EDIT_MODE -> vm.editMode = true
+        GestureAction.SETTINGS -> vm.showSettings = true
+        GestureAction.FIRST_PAGE -> vm.goToFirstPage()
+    }
+}
+
+/** Swipes, two-finger swipes and pinches on the home screen. */
+private fun Modifier.homeGestures(vm: LauncherViewModel, onGesture: (Gesture) -> Unit) = pointerInput(Unit) {
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+        if (vm.editMode || vm.drag != null) return@awaitEachGesture
+        val onWidget = vm.widgetBounds.values.any { it.contains(down.position) }
+        var multi = false
+        var pan = Offset.Zero
+        var zoom = 1f
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val pressed = event.changes.count { it.pressed }
+            if (pressed >= 2 && !multi) {
+                multi = true
+                pan = Offset.Zero
+                zoom = 1f
+            }
+            if (multi) {
+                zoom *= event.calculateZoom()
+                pan += event.calculatePan()
+                event.changes.forEach { if (it.positionChanged()) it.consume() }
+            } else {
+                pan += event.calculatePan()
+            }
+            if (pressed == 0) break
+        }
+        if (vm.drag != null || vm.menu != null) return@awaitEachGesture
+        val ax = abs(pan.x)
+        val ay = abs(pan.y)
+        val gesture = if (multi) {
+            when {
+                zoom < 0.72f -> Gesture.PINCH_IN
+                zoom > 1.4f -> Gesture.PINCH_OUT
+                ay > ax && pan.y > 180f -> Gesture.TWO_DOWN
+                ay > ax && pan.y < -180f -> Gesture.TWO_UP
+                else -> null
+            }
+        } else if (!onWidget && ay > 140f && ay > ax * 1.5f) {
+            if (pan.y < 0) Gesture.SWIPE_UP else Gesture.SWIPE_DOWN
+        } else null
+        gesture?.let(onGesture)
+    }
+}
+
+// ======================= Home =======================
 @Composable
-private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier) {
-    val ctx = LocalContext.current
+private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Gesture) -> Unit) {
     val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val padPx = with(density) { 12.dp.toPx() }
+    val edgePx = with(density) { 36.dp.toPx() }
     val pager = rememberPagerState { vm.layout.pages.size }
     val entry = remember { Animatable(1f) }
+    var gridBounds by remember { mutableStateOf(Rect.Zero) }
+    var dockBounds by remember { mutableStateOf(Rect.Zero) }
 
     LaunchedEffect(vm.homeTick) { if (vm.homeTick > 0) pager.animateScrollToPage(0) }
+    LaunchedEffect(vm.scrollTo) {
+        vm.scrollTo?.let {
+            pager.animateScrollToPage(it)
+            vm.scrollTo = null
+        }
+    }
     LaunchedEffect(vm.resumeTick) {
         entry.snapTo(0f)
         entry.animateTo(1f, tween(700, easing = LinearEasing))
     }
+    LaunchedEffect(pager.currentPage) { vm.currentPage = pager.currentPage }
+
+    // Hold a dragged icon at the screen edge to flip pages
+    val dragging = vm.drag != null
+    LaunchedEffect(dragging) {
+        while (vm.drag != null) {
+            val d = vm.drag ?: break
+            val moved = (d.pointer - d.start).getDistance() > 40f
+            val x = d.pointer.x
+            val dir = when {
+                !moved -> 0
+                x < gridBounds.left + edgePx -> -1
+                x > gridBounds.right - edgePx -> 1
+                else -> 0
+            }
+            if (dir == 0) {
+                delay(60)
+                continue
+            }
+            delay(500)
+            val x2 = vm.drag?.pointer?.x ?: break
+            val still = if (dir < 0) x2 < gridBounds.left + edgePx else x2 > gridBounds.right - edgePx
+            if (!still) continue
+            val target = pager.currentPage + dir
+            if (target == vm.layout.pages.size && vm.layout.pages.lastOrNull()?.any { it != null } == true) {
+                vm.addEmptyPage()
+            }
+            if (target in 0 until vm.layout.pages.size) {
+                pager.animateScrollToPage(target)
+                delay(400)
+            }
+        }
+    }
+
+    val drop: () -> Unit = {
+        val d = vm.drag
+        if (d != null) {
+            val s = vm.settings
+            val cw = (gridBounds.width - 2 * padPx) / s.cols
+            val ch = gridBounds.height / s.rows
+            val center = d.pointer - d.grab + Offset(cw / 2, ch / 2)
+            when {
+                dockBounds.contains(d.pointer) -> vm.endDrag(null, null, toDock = true)
+                gridBounds.contains(center) -> {
+                    val col = ((center.x - gridBounds.left - padPx) / cw).toInt().coerceIn(0, s.cols - 1)
+                    val row = ((center.y - gridBounds.top) / ch).toInt().coerceIn(0, s.rows - 1)
+                    vm.endDrag(pager.currentPage, row * s.cols + col, toDock = false)
+                }
+                else -> vm.endDrag(null, null, toDock = false)
+            }
+        }
+    }
 
     Column(
         modifier
-            .pointerInput(Unit) {
-                var total = 0f
-                detectVerticalDragGestures(
-                    onDragStart = { total = 0f },
-                    onDragEnd = {
-                        if (total < -120f) vm.drawerOpen = true
-                        else if (total > 120f) vm.expandNotifications()
-                    },
-                    onVerticalDrag = { _, d -> total += d },
-                )
-            }
+            .homeGestures(vm, onGesture)
             .pointerInput(Unit) {
                 detectTapGestures(
-                    onDoubleTap = { if (vm.settings.doubleTapLock) LockService.lock(ctx) },
+                    onDoubleTap = { onGesture(Gesture.DOUBLE_TAP) },
                     onLongPress = {
                         scope.launch {
                             delay(60)
@@ -121,16 +267,23 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier) {
             }
             .systemBarsPadding(),
     ) {
-        Box(Modifier.weight(1f).fillMaxWidth()) {
+        Box(
+            Modifier.weight(1f).fillMaxWidth().onGloballyPositioned { c ->
+                gridBounds = c.boundsInRoot()
+                vm.gridSize = c.size.toSize()
+            }
+        ) {
             HorizontalPager(
                 pager,
                 Modifier.fillMaxSize(),
                 userScrollEnabled = vm.drag == null,
-                beyondViewportPageCount = 1,
-            ) { page -> PageGrid(vm, page, entry.value) }
+                beyondViewportPageCount = 2,
+            ) { page ->
+                PageGrid(vm, page, entry.value, { Offset(gridBounds.left + padPx, gridBounds.top) }, drop)
+            }
         }
         PageDots(vm.layout.pages.size, pager.currentPage)
-        Dock(vm)
+        Dock(vm) { dockBounds = it }
         AnimatedVisibility(vm.editMode) { EditBar(vm) }
     }
 }
@@ -147,17 +300,24 @@ private fun Modifier.wiggle(seed: Int): Modifier {
     val inf = rememberInfiniteTransition(label = "wiggle")
     val r by inf.animateFloat(
         -1.6f, 1.6f,
-        infiniteRepeatable(tween(120 + (seed % 3) * 25), RepeatMode.Reverse),
+        infiniteRepeatable(tween(120 + (abs(seed) % 3) * 25), RepeatMode.Reverse),
         label = "r",
     )
     return graphicsLayer { rotationZ = r }
 }
 
 @Composable
-private fun PageGrid(vm: LauncherViewModel, page: Int, entry: Float) {
+private fun PageGrid(
+    vm: LauncherViewModel,
+    page: Int,
+    entry: Float,
+    origin: () -> Offset,
+    onDrop: () -> Unit,
+) {
     val s = vm.settings
     val slots = vm.layout.pages.getOrNull(page) ?: return
     val haptic = LocalHapticFeedback.current
+    val widgets = LocalWidgets.current
     BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         val cellW = maxWidth / s.cols
         val cellH = maxHeight / s.rows
@@ -169,7 +329,25 @@ private fun PageGrid(vm: LauncherViewModel, page: Int, entry: Float) {
 
         if (page == 0 && clock.visible) FlowClock(vm, maxWidth, maxHeight, entry)
 
-        // Icons "flow" outward from wherever the clock sits
+        // ---- widgets ----
+        vm.layout.widgets.filter { it.page == page }.forEach { w ->
+            key(w.appWidgetId) {
+                Box(
+                    Modifier
+                        .offset { IntOffset((w.col * cw).roundToInt(), (w.row * ch).roundToInt()) }
+                        .size(cellW * w.spanX, cellH * w.spanY)
+                        .padding(6.dp)
+                        .onGloballyPositioned { vm.widgetBounds[w.appWidgetId] = it.boundsInRoot() }
+                        .then(if (vm.editMode) Modifier.wiggle(w.appWidgetId) else Modifier),
+                ) {
+                    if (widgets != null) {
+                        WidgetHostCompose(widgets, w.appWidgetId) { vm.menu = MenuTarget.HomeWidget(w) }
+                    }
+                }
+            }
+        }
+
+        // ---- icons ----
         val originX = if (clock.visible) clock.x + 0.3f else 0.5f
         val originY = if (clock.visible) clock.y + 0.1f else 0f
 
@@ -177,42 +355,38 @@ private fun PageGrid(vm: LauncherViewModel, page: Int, entry: Float) {
             if (item == null) return@forEachIndexed
             val col = index % s.cols
             val row = index / s.cols
-            val dragging = vm.drag?.takeIf { it.page == page && it.index == index }
+            val isDragged = vm.drag?.let { it.page == page && it.index == index } == true
             val dist = hypot((col + 0.5f) / s.cols - originX, (row + 0.5f) / s.rows - originY)
             val t = ((entry - dist * 0.4f) / 0.6f).coerceIn(0f, 1f)
 
             Box(
                 Modifier
-                    .offset {
-                        IntOffset(
-                            (col * cw + (dragging?.offset?.x ?: 0f)).roundToInt(),
-                            (row * ch + (dragging?.offset?.y ?: 0f)).roundToInt(),
-                        )
-                    }
+                    .offset { IntOffset((col * cw).roundToInt(), (row * ch).roundToInt()) }
                     .size(cellW, cellH)
-                    .zIndex(if (dragging != null) 10f else 0f)
                     .graphicsLayer {
-                        val sc = if (dragging != null) 1.12f else 0.7f + 0.3f * backOut(t)
+                        val sc = 0.7f + 0.3f * backOut(t)
                         scaleX = sc; scaleY = sc
-                        alpha = if (dragging != null) 0.92f else t
+                        alpha = if (isDragged) 0f else t
                     }
-                    .then(if (vm.editMode && dragging == null) Modifier.wiggle(index) else Modifier)
+                    .then(if (vm.editMode && !isDragged) Modifier.wiggle(index) else Modifier)
                     .pointerInput(page, index, item, s.cols, s.rows) {
                         detectDragGesturesAfterLongPress(
-                            onDragStart = {
+                            onDragStart = { off ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                vm.startDrag(page, index)
+                                val pointer = origin() + Offset(col * cw, row * ch) + off
+                                vm.startDrag(page, index, item, pointer, off)
                             },
-                            onDrag = { change, amount -> change.consume(); vm.dragBy(amount) },
+                            onDrag = { change, amount ->
+                                change.consume()
+                                vm.dragBy(amount)
+                            },
                             onDragEnd = {
                                 val d = vm.drag
-                                if (d == null || d.offset.getDistance() < 24f) {
+                                if (d != null && (d.pointer - d.start).getDistance() < 24f) {
                                     vm.cancelDrag()
                                     vm.showMenuFor(page, index)
                                 } else {
-                                    val tc = ((col * cw + d.offset.x + cw / 2) / cw).toInt().coerceIn(0, s.cols - 1)
-                                    val tr = ((row * ch + d.offset.y + ch / 2) / ch).toInt().coerceIn(0, s.rows - 1)
-                                    vm.endDrag(tr * s.cols + tc)
+                                    onDrop()
                                 }
                             },
                             onDragCancel = { vm.cancelDrag() },
@@ -231,6 +405,34 @@ private fun PageGrid(vm: LauncherViewModel, page: Int, entry: Float) {
                     }
                 }
             }
+        }
+    }
+}
+
+/** The icon that follows your finger while dragging (drawn above everything, across pages). */
+@Composable
+private fun DragGhost(vm: LauncherViewModel, d: DragState) {
+    val density = LocalDensity.current
+    val s = vm.settings
+    val g = vm.gridSize
+    if (g.width <= 0f) return
+    val padPx = with(density) { 12.dp.toPx() }
+    val cwPx = (g.width - 2 * padPx) / s.cols
+    val chPx = g.height / s.rows
+    val w = with(density) { cwPx.toDp() }
+    val h = with(density) { chPx.toDp() }
+    val iconSize = (minOf(w, h) * 0.62f * s.iconScale).coerceAtMost(76.dp)
+    Box(
+        Modifier
+            .offset { IntOffset((d.pointer.x - d.grab.x).roundToInt(), (d.pointer.y - d.grab.y).roundToInt()) }
+            .size(w, h)
+            .zIndex(20f)
+            .graphicsLayer { scaleX = 1.12f; scaleY = 1.12f; alpha = 0.95f },
+        contentAlignment = Alignment.Center,
+    ) {
+        when (val item = d.item) {
+            is HomeItem.App -> vm.appMap[item.key]?.let { AppIcon(it, iconSize, s.showLabels) {} }
+            is HomeItem.Folder -> FolderIcon(item, vm.appMap, iconSize, s.showLabels) {}
         }
     }
 }
@@ -254,7 +456,7 @@ private fun FlowClock(vm: LauncherViewModel, areaW: Dp, areaH: Dp, entry: Float)
     val density = LocalDensity.current
     val wPx = with(density) { areaW.toPx() }
     val hPx = with(density) { areaH.toPx() }
-    val settle = 1.25f - 0.25f * FastOutSlowInEasing.transform(entry)  // shrinks into place on unlock/return
+    val settle = 1.25f - 0.25f * FastOutSlowInEasing.transform(entry)
 
     val transform = rememberTransformableState { zoom, pan, _ ->
         val cur = vm.layout.clock
@@ -322,13 +524,17 @@ private fun PageDots(count: Int, current: Int) {
 }
 
 @Composable
-private fun Dock(vm: LauncherViewModel) {
+private fun Dock(vm: LauncherViewModel, onBounds: (Rect) -> Unit) {
     val apps = vm.layout.dock.mapNotNull { vm.appMap[it] }
-    if (apps.isEmpty()) return
+    if (apps.isEmpty() && vm.drag == null) return
     Row(
         Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth()
-            .glass(RoundedCornerShape(30.dp), 0.12f).padding(vertical = 12.dp),
+            .heightIn(min = 78.dp)
+            .onGloballyPositioned { onBounds(it.boundsInRoot()) }
+            .glass(RoundedCornerShape(30.dp), if (vm.drag != null) 0.22f else 0.12f)
+            .padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         apps.forEachIndexed { i, app ->
             AppIcon(
@@ -343,12 +549,13 @@ private fun Dock(vm: LauncherViewModel) {
 private fun EditBar(vm: LauncherViewModel) {
     val ctx = LocalContext.current
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         GlassPill("Wallpaper", Modifier.weight(1f)) {
             runCatching { ctx.startActivity(Intent.createChooser(Intent(Intent.ACTION_SET_WALLPAPER), "Set wallpaper")) }
         }
+        GlassPill("Widgets", Modifier.weight(1f)) { vm.widgetPickerOpen = true }
         GlassPill("Settings", Modifier.weight(1f)) { vm.showSettings = true }
         GlassPill("Done", Modifier.weight(1f), selected = true) { vm.editMode = false }
     }

@@ -11,11 +11,15 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+typealias Pages = MutableList<MutableList<HomeItem?>>
 
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
     private val ctx: Application get() = getApplication()
@@ -31,14 +35,22 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     var drag by mutableStateOf<DragState?>(null); private set
     var homeTick by mutableIntStateOf(0); private set
     var resumeTick by mutableIntStateOf(0); private set
+    var scrollTo by mutableStateOf<Int?>(null)
+    var gridSize by mutableStateOf(Size.Zero)
 
     var drawerOpen by mutableStateOf(false)
     var openFolderId by mutableStateOf<String?>(null)
     var editMode by mutableStateOf(false)
     var showSettings by mutableStateOf(false)
+    var widgetPickerOpen by mutableStateOf(false)
+    var privateOpen by mutableStateOf(false)
     var menu by mutableStateOf<MenuTarget?>(null)
 
+    var currentPage = 0
+    val widgetBounds = HashMap<Int, Rect>()
+
     val visibleApps: List<AppInfo> get() = apps.filter { it.key !in settings.hidden }
+    val privateApps: List<AppInfo> get() = apps.filter { it.key in settings.hidden }
     val openFolder: HomeItem.Folder? get() = openFolderId?.let { findFolder(it)?.third }
 
     init {
@@ -52,7 +64,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun refresh() {
         viewModelScope.launch {
-            val list = withContext(Dispatchers.Default) { repo.loadApps() }
+            val pack = settings.iconPack
+            val list = withContext(Dispatchers.Default) { repo.loadApps(pack) }
             apps = list
             appMap = list.associateBy { it.key }
             val base = if (loaded) layout else repo.loadLayout()
@@ -64,76 +77,102 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    // ---------- layout building ----------
-    private fun defaultLayout(): LayoutState {
-        val dock = repo.defaultDockPackages()
-            .mapNotNull { p -> apps.firstOrNull { it.packageName == p }?.key }
-            .distinct().take(4)
-        val items = visibleApps.filter { it.key !in dock }.map { HomeItem.App(it.key) }
-        val clock = ClockState()
-        return LayoutState(flow(items, clock.visible), dock, clock, apps.map { it.key }.toSet())
+    // =============== grid helpers ===============
+    private val slotCount get() = settings.cols * settings.rows
+    private fun emptyPage(): MutableList<HomeItem?> = MutableList(slotCount) { null }
+
+    private fun WidgetItem.covers(page: Int, index: Int): Boolean {
+        if (page != this.page) return false
+        val c = index % settings.cols
+        val r = index / settings.cols
+        return c >= col && c < col + spanX && r >= row && r < row + spanY
     }
 
-    private fun reconcile(l: LayoutState): LayoutState {
-        val valid = appMap.keys
-        fun clean(item: HomeItem?): HomeItem? = when (item) {
-            null -> null
-            is HomeItem.App -> item.takeIf { it.key in valid }
-            is HomeItem.Folder -> item.apps.filter { it in valid }.let { a ->
-                when (a.size) {
-                    0 -> null
-                    1 -> HomeItem.App(a[0])
-                    else -> item.copy(apps = a)
-                }
-            }
-        }
-        val size = settings.cols * settings.rows
-        val pages = l.pages.map { p -> MutableList(size) { i -> clean(p.getOrNull(i)) } }.toMutableList()
-        if (pages.isEmpty()) pages += MutableList<HomeItem?>(size) { null }
-        apps.filter { it.key !in l.known && it.key !in settings.hidden }
-            .forEach { place(pages, HomeItem.App(it.key), l.clock.visible) }
-        return l.copy(pages = trim(pages), dock = l.dock.filter { it in valid }, known = valid.toSet())
-    }
-
-    private fun flow(items: List<HomeItem>, clockVisible: Boolean): List<List<HomeItem?>> {
-        val size = settings.cols * settings.rows
-        val pages = mutableListOf(MutableList<HomeItem?>(size) { null })
-        var i = if (clockVisible) settings.cols * 2 else 0
-        for (item in items) {
-            if (i >= size) {
-                pages += MutableList<HomeItem?>(size) { null }
-                i = 0
-            }
-            pages.last()[i++] = item
-        }
-        return pages
-    }
+    private fun blocked(page: Int, index: Int, clockVisible: Boolean, widgets: List<WidgetItem>) =
+        (page == 0 && clockVisible && index < settings.cols * 2) || widgets.any { it.covers(page, index) }
 
     private fun place(
-        p: MutableList<MutableList<HomeItem?>>,
+        p: Pages,
         item: HomeItem,
-        clockVisible: Boolean,
+        clockVisible: Boolean = layout.clock.visible,
+        widgets: List<WidgetItem> = layout.widgets,
         startPage: Int = 0,
     ) {
-        val size = settings.cols * settings.rows
+        while (p.size < startPage) p += emptyPage()
         for (pi in startPage until p.size) {
-            val from = if (pi == 0 && clockVisible) settings.cols * 2 else 0
-            val slot = (from until p[pi].size).firstOrNull { p[pi][it] == null }
+            val slot = p[pi].indices.firstOrNull { p[pi][it] == null && !blocked(pi, it, clockVisible, widgets) }
             if (slot != null) {
                 p[pi][slot] = item
                 return
             }
         }
-        p += MutableList<HomeItem?>(size) { null }.also { it[0] = item }
+        p += emptyPage().also { it[0] = item }
     }
 
-    private fun trim(p: MutableList<MutableList<HomeItem?>>): List<List<HomeItem?>> {
-        while (p.size > 1 && p.last().all { it == null }) p.removeAt(p.lastIndex)
+    private fun findRect(
+        pages: Pages,
+        widgets: List<WidgetItem>,
+        sx: Int,
+        sy: Int,
+        startPage: Int,
+        clockVisible: Boolean,
+    ): Triple<Int, Int, Int> {
+        while (pages.size <= startPage) pages += emptyPage()
+        var pi = startPage
+        while (true) {
+            if (pi == pages.size) pages += emptyPage()
+            for (r in 0..settings.rows - sy) {
+                for (c in 0..settings.cols - sx) {
+                    val fits = (r until r + sy).all { rr ->
+                        (c until c + sx).all { cc ->
+                            val idx = rr * settings.cols + cc
+                            pages[pi][idx] == null && !blocked(pi, idx, clockVisible, widgets)
+                        }
+                    }
+                    if (fits) return Triple(pi, c, r)
+                }
+            }
+            pi++
+        }
+    }
+
+    /** Re-flows icons around widgets (used after grid-size changes, organizing, clock toggle). */
+    private fun relayout(
+        items: List<HomeItem>,
+        clockVisible: Boolean,
+        widgets: List<WidgetItem>,
+    ): Pair<List<List<HomeItem?>>, List<WidgetItem>> {
+        val pages: Pages = mutableListOf(emptyPage())
+        val placed = mutableListOf<WidgetItem>()
+        widgets.sortedWith(compareBy({ it.page }, { it.row }, { it.col })).forEach { w ->
+            val sx = w.spanX.coerceIn(1, settings.cols)
+            val sy = w.spanY.coerceIn(1, settings.rows)
+            val (pg, c, r) = findRect(pages, placed, sx, sy, w.page, clockVisible)
+            placed += w.copy(page = pg, col = c, row = r, spanX = sx, spanY = sy)
+        }
+        var pi = 0
+        var i = 0
+        for (item in items) {
+            while (true) {
+                if (pi >= pages.size) pages += emptyPage()
+                if (i >= slotCount) { pi++; i = 0; continue }
+                if (pages[pi][i] == null && !blocked(pi, i, clockVisible, placed)) break
+                i++
+            }
+            pages[pi][i++] = item
+        }
+        return pages to placed
+    }
+
+    private fun trim(p: Pages, widgets: List<WidgetItem> = layout.widgets): List<List<HomeItem?>> {
+        while (p.size > 1 && p.last().all { it == null } && widgets.none { it.page == p.lastIndex }) {
+            p.removeAt(p.lastIndex)
+        }
         return p
     }
 
-    private fun editPages(block: (MutableList<MutableList<HomeItem?>>) -> Unit) {
-        val p = layout.pages.map { it.toMutableList() }.toMutableList()
+    private fun editPages(block: (Pages) -> Unit) {
+        val p: Pages = layout.pages.map { it.toMutableList() }.toMutableList()
         block(p)
         layout = layout.copy(pages = trim(p))
         saveLayout()
@@ -157,49 +196,184 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun saveLayout() = repo.saveLayout(layout)
 
-    // ---------- drag & drop ----------
-    fun startDrag(page: Int, index: Int) {
-        drag = DragState(page, index)
+    // =============== building ===============
+    private fun defaultLayout(): LayoutState {
+        val dock = repo.defaultDockPackages()
+            .mapNotNull { p -> apps.firstOrNull { it.packageName == p }?.key }
+            .distinct().take(4)
+        val items = visibleApps.filter { it.key !in dock }.map { HomeItem.App(it.key) }
+        val clock = ClockState()
+        val (pages, _) = relayout(items, clock.visible, emptyList())
+        return LayoutState(pages, dock, clock, apps.map { it.key }.toSet())
+    }
+
+    private fun reconcile(l: LayoutState): LayoutState {
+        val valid = appMap.keys
+        fun clean(item: HomeItem?): HomeItem? = when (item) {
+            null -> null
+            is HomeItem.App -> item.takeIf { it.key in valid }
+            is HomeItem.Folder -> item.apps.filter { it in valid }.let { a ->
+                when (a.size) {
+                    0 -> null
+                    1 -> HomeItem.App(a[0])
+                    else -> item.copy(apps = a)
+                }
+            }
+        }
+        val pages: Pages = l.pages.map { p -> MutableList(slotCount) { i -> clean(p.getOrNull(i)) } }.toMutableList()
+        if (pages.isEmpty()) pages += emptyPage()
+        val lastWidgetPage = l.widgets.maxOfOrNull { it.page } ?: 0
+        while (pages.size <= lastWidgetPage) pages += emptyPage()
+        apps.filter { it.key !in l.known && it.key !in settings.hidden }
+            .forEach { place(pages, HomeItem.App(it.key), l.clock.visible, l.widgets) }
+        return l.copy(
+            pages = trim(pages, l.widgets),
+            dock = l.dock.filter { it in valid },
+            known = valid.toSet(),
+        )
+    }
+
+    /** Standard mode: every visible app lives on the home screen or dock. */
+    private fun ensureAllOnHome() {
+        val onHome = layout.pages.flatten().flatMap {
+            when (it) {
+                is HomeItem.App -> listOf(it.key)
+                is HomeItem.Folder -> it.apps
+                null -> emptyList()
+            }
+        }.toSet() + layout.dock
+        val missing = visibleApps.filter { it.key !in onHome }
+        if (missing.isEmpty()) return
+        editPages { p -> missing.forEach { place(p, HomeItem.App(it.key)) } }
+    }
+
+    // =============== drag & drop ===============
+    fun startDrag(page: Int, index: Int, item: HomeItem, pointer: Offset, grab: Offset) {
+        drag = DragState(page, index, item, pointer, pointer, grab)
         menu = null
     }
 
     fun dragBy(delta: Offset) {
-        drag = drag?.let { it.copy(offset = it.offset + delta) }
+        drag = drag?.let { it.copy(pointer = it.pointer + delta) }
     }
 
     fun cancelDrag() {
         drag = null
+        editPages { }   // removes a temporary empty page, if any
     }
 
-    fun endDrag(target: Int) {
+    fun addEmptyPage() {
+        layout = layout.copy(pages = layout.pages + listOf(emptyPage()))
+    }
+
+    fun endDrag(targetPage: Int?, targetIndex: Int?, toDock: Boolean) {
         val d = drag ?: return
         drag = null
-        if (target == d.index) return
+        if (toDock) {
+            val item = d.item
+            when {
+                item !is HomeItem.App -> toast("Folders can't go in the dock")
+                layout.dock.size >= 5 -> toast("Dock is full")
+                else -> {
+                    layout = layout.copy(dock = layout.dock + (item as HomeItem.App).key)
+                    editPages { it[d.page][d.index] = null }
+                    return
+                }
+            }
+            editPages { }
+            return
+        }
+        if (targetPage == null || targetIndex == null ||
+            (targetPage == d.page && targetIndex == d.index) ||
+            layout.widgets.any { it.covers(targetPage, targetIndex) }
+        ) {
+            editPages { }
+            return
+        }
         editPages { p ->
-            val page = p[d.page]
-            val src = page[d.index] ?: return@editPages
-            val dst = page[target]
+            while (p.size <= targetPage) p += emptyPage()
+            val src = p[d.page][d.index] ?: return@editPages
+            val dst = p[targetPage][targetIndex]
             when {
                 dst == null -> {
-                    page[target] = src; page[d.index] = null
+                    p[targetPage][targetIndex] = src
+                    p[d.page][d.index] = null
                 }
                 src is HomeItem.App && dst is HomeItem.App -> {
                     val keys = listOf(dst.key, src.key)
-                    page[target] = HomeItem.Folder(newId(), autoName(keys), keys)
-                    page[d.index] = null
+                    p[targetPage][targetIndex] = HomeItem.Folder(newId(), autoName(keys), keys)
+                    p[d.page][d.index] = null
                 }
                 src is HomeItem.App && dst is HomeItem.Folder -> {
-                    page[target] = dst.copy(apps = dst.apps + src.key)
-                    page[d.index] = null
+                    p[targetPage][targetIndex] = dst.copy(apps = dst.apps + src.key)
+                    p[d.page][d.index] = null
                 }
                 else -> {
-                    page[target] = src; page[d.index] = dst
+                    p[targetPage][targetIndex] = src
+                    p[d.page][d.index] = dst
                 }
             }
         }
     }
 
-    // ---------- menu actions ----------
+    // =============== widgets ===============
+    fun addWidget(id: Int, spanX: Int, spanY: Int) {
+        val sx = spanX.coerceIn(1, settings.cols)
+        val sy = spanY.coerceIn(1, settings.rows)
+        val p: Pages = layout.pages.map { it.toMutableList() }.toMutableList()
+        val (pg, c, r) = findRect(p, layout.widgets, sx, sy, currentPage.coerceAtLeast(0), layout.clock.visible)
+        layout = layout.copy(pages = p, widgets = layout.widgets + WidgetItem(id, pg, c, r, sx, sy))
+        saveLayout()
+        widgetPickerOpen = false
+        editMode = false
+        scrollTo = pg
+    }
+
+    fun removeWidget(id: Int) {
+        layout = layout.copy(widgets = layout.widgets.filter { it.appWidgetId != id })
+        widgetBounds.remove(id)
+        editPages { }
+        menu = null
+    }
+
+    fun resizeWidget(id: Int, dx: Int, dy: Int) {
+        val w = layout.widgets.firstOrNull { it.appWidgetId == id } ?: return
+        val nx = w.spanX + dx
+        val ny = w.spanY + dy
+        if (nx < 1 || ny < 1 || w.col + nx > settings.cols || w.row + ny > settings.rows) {
+            toast("No room to resize")
+            return
+        }
+        val others = layout.widgets.filter { it.appWidgetId != id }
+        val page = layout.pages[w.page]
+        val free = (w.row until w.row + ny).all { r ->
+            (w.col until w.col + nx).all { c ->
+                val idx = r * settings.cols + c
+                page[idx] == null && others.none { it.covers(w.page, idx) }
+            }
+        }
+        if (!free) {
+            toast("Move icons out of the way first")
+            return
+        }
+        val updated = w.copy(spanX = nx, spanY = ny)
+        layout = layout.copy(widgets = others + updated)
+        saveLayout()
+        menu = MenuTarget.HomeWidget(updated)
+    }
+
+    fun moveWidgetToNextPage(id: Int) {
+        val w = layout.widgets.firstOrNull { it.appWidgetId == id } ?: return
+        val others = layout.widgets.filter { it.appWidgetId != id }
+        val p: Pages = layout.pages.map { it.toMutableList() }.toMutableList()
+        val (pg, c, r) = findRect(p, others, w.spanX, w.spanY, w.page + 1, layout.clock.visible)
+        layout = layout.copy(pages = p, widgets = others + w.copy(page = pg, col = c, row = r))
+        editPages { }
+        menu = null
+        scrollTo = pg
+    }
+
+    // =============== menu actions ===============
     fun showMenuFor(page: Int, index: Int) {
         menu = when (val item = layout.pages.getOrNull(page)?.getOrNull(index)) {
             is HomeItem.App -> appMap[item.key]?.let { MenuTarget.HomeApp(page, index, it) }
@@ -217,9 +391,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         editPages { p ->
             val item = p[page][index] ?: return@editPages
             p[page][index] = null
-            place(p, item, layout.clock.visible, page + 1)
+            place(p, item, startPage = page + 1)
         }
         menu = null
+        scrollTo = page + 1
     }
 
     private fun isOnHome(key: String) = layout.pages.flatten().any {
@@ -228,7 +403,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     fun addToHome(key: String) {
         if (!isOnHome(key) && key !in layout.dock) {
-            editPages { place(it, HomeItem.App(key), layout.clock.visible) }
+            editPages { place(it, HomeItem.App(key)) }
             toast("Added to home screen")
         }
         menu = null
@@ -254,7 +429,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         editPages { p ->
             val f = p[page][index] as? HomeItem.Folder ?: return@editPages
             p[page][index] = HomeItem.App(f.apps.first())
-            f.apps.drop(1).forEach { place(p, HomeItem.App(it), layout.clock.visible) }
+            f.apps.drop(1).forEach { place(p, HomeItem.App(it)) }
         }
         menu = null
     }
@@ -264,7 +439,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         editPages { p ->
             val rest = f.apps - key
             p[pg][idx] = if (rest.size == 1) HomeItem.App(rest[0]) else f.copy(apps = rest)
-            place(p, HomeItem.App(key), layout.clock.visible)
+            place(p, HomeItem.App(key))
         }
         if (findFolder(folderId) == null) openFolderId = null
         menu = null
@@ -275,6 +450,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         editPages { it[pg][idx] = f.copy(name = name.trim().ifBlank { f.name }) }
     }
 
+    /** Move to private space. */
     fun hide(key: String) {
         updateSettings(settings.copy(hidden = settings.hidden + key))
         layout = layout.copy(dock = layout.dock - key)
@@ -293,49 +469,39 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             }
         }
         menu = null
+        toast("Moved to private space")
     }
 
+    /** Move out of private space. */
     fun unhide(key: String) {
         updateSettings(settings.copy(hidden = settings.hidden - key))
         addToHome(key)
     }
 
-    // ---------- clock ----------
+    // =============== clock ===============
     fun setClock(c: ClockState) {
         layout = layout.copy(clock = c)
     }
 
     fun setClockVisible(visible: Boolean) {
-        val items = layout.pages.flatten().filterNotNull()
-        layout = layout.copy(clock = layout.clock.copy(visible = visible), pages = flow(items, visible))
+        val (pages, widgets) = relayout(layout.pages.flatten().filterNotNull(), visible, layout.widgets)
+        layout = layout.copy(clock = layout.clock.copy(visible = visible), pages = pages, widgets = widgets)
         saveLayout()
     }
 
-    // ---------- settings & organizing ----------
+    // =============== settings ===============
     fun updateSettings(s: LauncherSettings) {
-        val reflow = s.cols != settings.cols || s.rows != settings.rows
+        val old = settings
         settings = s
         repo.saveSettings(s)
-        if (reflow) {
-            layout = layout.copy(pages = flow(layout.pages.flatten().filterNotNull(), layout.clock.visible))
+        if (s.cols != old.cols || s.rows != old.rows) {
+            val (pages, widgets) = relayout(layout.pages.flatten().filterNotNull(), layout.clock.visible, layout.widgets)
+            layout = layout.copy(pages = pages, widgets = widgets)
             saveLayout()
         }
+        if (s.iconPack != old.iconPack) refresh()
         if (!s.drawerMode) ensureAllOnHome()
         suggestions = repo.suggestions(visibleApps)
-    }
-
-    /** Standard mode: every visible app must be somewhere on the home screen or dock. */
-    private fun ensureAllOnHome() {
-        val onHome = layout.pages.flatten().flatMap {
-            when (it) {
-                is HomeItem.App -> listOf(it.key)
-                is HomeItem.Folder -> it.apps
-                null -> emptyList()
-            }
-        }.toSet() + layout.dock
-        val missing = visibleApps.filter { it.key !in onHome }
-        if (missing.isEmpty()) return
-        editPages { p -> missing.forEach { place(p, HomeItem.App(it.key), layout.clock.visible) } }
     }
 
     fun organizeByCategory() {
@@ -346,12 +512,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         val items = folders + grouped.flatMap { (cat, keys) ->
             if (keys.size >= 2) listOf(HomeItem.Folder(newId(), cat, keys)) else keys.map { HomeItem.App(it) }
         }
-        layout = layout.copy(pages = flow(items, layout.clock.visible))
+        val (pages, widgets) = relayout(items, layout.clock.visible, layout.widgets)
+        layout = layout.copy(pages = pages, widgets = widgets)
         saveLayout()
         toast("Home screen organized by category")
     }
 
-    // ---------- launching & system actions ----------
+    // =============== launching & system ===============
     fun launch(app: AppInfo) {
         runCatching { repo.launcherApps.startMainActivity(app.component, app.user, null, null) }
             .onFailure { toast("Can't open ${app.label}") }
@@ -381,16 +548,24 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     @SuppressLint("WrongConstant")
-    fun expandNotifications() {
+    private fun statusBar(method: String) {
         runCatching {
             val sb = ctx.getSystemService("statusbar")
-            Class.forName("android.app.StatusBarManager").getMethod("expandNotificationsPanel").invoke(sb)
+            Class.forName("android.app.StatusBarManager").getMethod(method).invoke(sb)
         }
     }
 
-    // ---------- navigation ----------
+    fun expandNotifications() = statusBar("expandNotificationsPanel")
+    fun expandQuickSettings() = statusBar("expandSettingsPanel")
+
+    // =============== navigation ===============
+    fun goToFirstPage() {
+        homeTick++
+    }
+
     fun closeAll() {
-        drawerOpen = false; openFolderId = null; menu = null; showSettings = false; editMode = false
+        drawerOpen = false; openFolderId = null; menu = null; showSettings = false
+        editMode = false; widgetPickerOpen = false; privateOpen = false
     }
 
     fun onResume() {
@@ -401,6 +576,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun onBack() {
         when {
             menu != null -> menu = null
+            widgetPickerOpen -> widgetPickerOpen = false
+            privateOpen -> privateOpen = false
             showSettings -> showSettings = false
             openFolderId != null -> openFolderId = null
             drawerOpen -> drawerOpen = false
@@ -409,8 +586,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onHomePressed() {
-        if (menu != null || showSettings || openFolderId != null || drawerOpen || editMode) closeAll()
-        else homeTick++
+        val anyOpen = menu != null || showSettings || openFolderId != null || drawerOpen ||
+            editMode || widgetPickerOpen || privateOpen
+        if (anyOpen) closeAll() else homeTick++
     }
 
     private fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
