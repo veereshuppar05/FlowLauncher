@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.*
@@ -53,11 +54,13 @@ import kotlin.math.roundToInt
 fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur: (Int) -> Unit) {
     val activity = LocalContext.current as Activity
     val badgeCounts by BadgeService.counts.collectAsState()
+    val menuAnchor = remember { MenuAnchor() }
     MaterialTheme(colorScheme = darkColorScheme()) {
         CompositionLocalProvider(
             LocalIconShape provides vm.settings.iconShape.toShape(),
             LocalBadges provides (if (vm.settings.badges) badgeCounts else emptyMap()),
             LocalWidgets provides widgets,
+            LocalMenuAnchor provides menuAnchor,
         ) {
             val overlay = vm.drawerOpen || vm.openFolderId != null || vm.showSettings ||
                 vm.widgetPickerOpen || vm.privateOpen
@@ -318,6 +321,7 @@ private fun PageGrid(
     val slots = vm.layout.pages.getOrNull(page) ?: return
     val haptic = LocalHapticFeedback.current
     val widgets = LocalWidgets.current
+    val anchor = LocalMenuAnchor.current
     BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
         val cellW = maxWidth / s.cols
         val cellH = maxHeight / s.rows
@@ -341,7 +345,10 @@ private fun PageGrid(
                         .then(if (vm.editMode) Modifier.wiggle(w.appWidgetId) else Modifier),
                 ) {
                     if (widgets != null) {
-                        WidgetHostCompose(widgets, w.appWidgetId) { vm.menu = MenuTarget.HomeWidget(w) }
+                        WidgetHostCompose(widgets, w.appWidgetId) {
+                            anchor.rect = vm.widgetBounds[w.appWidgetId] ?: Rect.Zero
+                            vm.menu = MenuTarget.HomeWidget(w)
+                        }
                     }
                 }
             }
@@ -377,6 +384,7 @@ private fun PageGrid(
                                 vm.suppressClick = true               // the release must not open the app
                                 val pointer = origin() + Offset(col * cw, row * ch) + off
                                 vm.startDrag(page, index, item, pointer, off)
+                                anchor.rect = Rect(origin() + Offset(col * cw, row * ch), Size(cw, ch))
                                 vm.showMenuFor(page, index)
                             },
                             onDrag = { change, amount ->

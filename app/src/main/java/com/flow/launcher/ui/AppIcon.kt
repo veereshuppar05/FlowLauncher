@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -26,6 +27,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import com.flow.launcher.AppInfo
 import com.flow.launcher.HomeItem
 import com.flow.launcher.IconShape
@@ -34,6 +37,10 @@ import com.flow.launcher.WidgetController
 val LocalIconShape = staticCompositionLocalOf<Shape> { RoundedCornerShape(30) }
 val LocalBadges = compositionLocalOf<Map<String, Int>> { emptyMap() }
 val LocalWidgets = staticCompositionLocalOf<WidgetController?> { null }
+
+/** Remembers where the long-pressed item is, so the menu can appear next to it. */
+class MenuAnchor { var rect: Rect = Rect.Zero }
+val LocalMenuAnchor = staticCompositionLocalOf { MenuAnchor() }
 
 fun IconShape.toShape(): Shape = when (this) {
     IconShape.SQUIRCLE -> RoundedCornerShape(30)
@@ -96,13 +103,16 @@ fun AppIcon(
     val interaction = remember { MutableInteractionSource() }
     val scale = bounceScale(interaction)
     val count = LocalBadges.current[app.packageName] ?: 0
+    val anchor = LocalMenuAnchor.current
+    val bounds = remember { arrayOf(Rect.Zero) }
     Column(
         modifier
+            .onGloballyPositioned { bounds[0] = it.boundsInRoot() }
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
-                onLongClick = onLongClick,
+                onLongClick = onLongClick?.let { lc -> { anchor.rect = bounds[0]; lc() } },
                 onClick = onClick,
             ),
         horizontalAlignment = Alignment.CenterHorizontally,
