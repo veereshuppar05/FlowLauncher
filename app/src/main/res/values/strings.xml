@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Flow Launcher</string>
+    <string name="lock_desc">Lets Flow Launcher lock the screen when you double-tap an empty area of the home screen. It does not read any screen content.</string>
+</resources>
