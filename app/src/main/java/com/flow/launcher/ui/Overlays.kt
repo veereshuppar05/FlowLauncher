@@ -11,12 +11,14 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -26,20 +28,28 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.addPathNodes
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
@@ -63,6 +73,10 @@ fun FolderOverlay(vm: LauncherViewModel) {
     val folder = vm.openFolder
     val shown = rememberLast(folder)
     var renaming by remember { mutableStateOf(false) }
+    // While an app is being dragged out, the folder fades away so you can see the home screen
+    val draggingOut by remember {
+        derivedStateOf { vm.drag?.page == LauncherViewModel.FOLDER_PAGE && vm.menu == null }
+    }
 
     AnimatedVisibility(
         folder != null,
@@ -70,8 +84,11 @@ fun FolderOverlay(vm: LauncherViewModel) {
         exit = fadeOut(tween(140)) + scaleOut(targetScale = 0.75f),
     ) {
         val f = shown ?: return@AnimatedVisibility
+        val fade by animateFloatAsState(if (draggingOut) 0f else 1f, tween(160), label = "folderFade")
         Box(
-            Modifier.fillMaxSize().clickable(interactionSource = noRipple(), indication = null) { vm.openFolderId = null },
+            Modifier.fillMaxSize()
+                .graphicsLayer { alpha = fade }
+                .clickable(interactionSource = noRipple(), indication = null) { vm.openFolderId = null },
             contentAlignment = Alignment.Center,
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -85,14 +102,17 @@ fun FolderOverlay(vm: LauncherViewModel) {
                         .clickable(interactionSource = noRipple(), indication = null) {}
                         .padding(18.dp)
                 ) {
+                    val iconSize = rememberIconSize(vm)
                     LazyVerticalGrid(
                         GridCells.Fixed(3),
                         Modifier.heightIn(max = 400.dp),
                         verticalArrangement = Arrangement.spacedBy(18.dp),
                     ) {
-                        items(f.apps.mapNotNull { vm.appMap[it] }, key = { it.key }) { app ->
-                            AppIcon(app, rememberIconSize(vm), true,
-                                onLongClick = { vm.menu = MenuTarget.FolderApp(f.id, app) }) { vm.launch(app) }
+                        itemsIndexed(
+                            f.apps.mapNotNull { vm.appMap[it] },
+                            key = { _, app -> app.key },
+                        ) { i, app ->
+                            FolderAppIcon(vm, f.id, i, app, iconSize)
                         }
                     }
                 }
@@ -103,6 +123,57 @@ fun FolderOverlay(vm: LauncherViewModel) {
                 vm.renameFolder(f.id, it)
                 renaming = false
             }
+        }
+    }
+}
+
+/** An app inside an open folder: tap to open, hold for menu, hold + drag to pull it out. */
+@Composable
+private fun FolderAppIcon(vm: LauncherViewModel, folderId: String, index: Int, app: AppInfo, iconSize: Dp) {
+    val haptic = LocalHapticFeedback.current
+    val anchor = LocalMenuAnchor.current
+    val bounds = remember { arrayOf(Rect.Zero) }
+    Box(
+        Modifier
+            .onGloballyPositioned { bounds[0] = it.boundsInRoot() }
+            .pointerInput(folderId, app.key) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { off ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        vm.suppressClick = true
+                        val b = bounds[0]
+                        val s = vm.settings
+                        val pad = GridPad.toPx()
+                        val cw = (vm.gridSize.width - 2 * pad) / s.cols
+                        val ch = vm.gridSize.height / s.rows
+                        val grab = Offset(cw / 2f, ch / 2f) + off - Offset(b.width / 2f, b.height / 2f)
+                        vm.startFolderDrag(folderId, index, app.key, b.topLeft + off, grab)
+                        anchor.rect = b
+                        vm.menu = MenuTarget.FolderApp(folderId, app)
+                    },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        vm.dragBy(amount)
+                    },
+                    onDragEnd = {
+                        val d = vm.drag
+                        if (d != null && (d.pointer - d.start).getDistance() < 24f) {
+                            vm.cancelDrag()                         // just a long-press: keep menu
+                        } else {
+                            vm.dropHandler?.invoke() ?: vm.cancelDrag()
+                        }
+                        vm.suppressClick = false
+                    },
+                    onDragCancel = {
+                        vm.cancelDrag()
+                        vm.suppressClick = false
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        AppIcon(app, iconSize, true) {
+            if (vm.suppressClick) vm.suppressClick = false else vm.launch(app)
         }
     }
 }

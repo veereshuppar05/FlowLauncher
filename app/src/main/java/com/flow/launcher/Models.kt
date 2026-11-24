@@ -96,6 +96,7 @@ data class DragState(
     val pointer: Offset,
     val grab: Offset,
     val group: List<HomeItem> = emptyList(),   // non-empty when moving several selected items
+    val folderId: String? = null,              // set when dragging an app out of a folder
 )
 
 sealed interface MenuTarget {

@@ -51,7 +51,7 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
-private val GridPad = 16.dp
+internal val GridPad = 16.dp
 
 /** One icon size for the whole launcher (home, dock, drawer, folders, private space, drag). */
 @Composable
@@ -87,7 +87,10 @@ fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur
             LocalWidgets provides widgets,
             LocalMenuAnchor provides menuAnchor,
         ) {
-            val overlay = vm.drawerOpen || vm.openFolderId != null || vm.showSettings ||
+            val folderDragOut by remember {
+                derivedStateOf { vm.drag?.page == LauncherViewModel.FOLDER_PAGE && vm.menu == null }
+            }
+            val overlay = vm.drawerOpen || (vm.openFolderId != null && !folderDragOut) || vm.showSettings ||
                 vm.widgetPickerOpen || vm.privateOpen
             val blur by animateFloatAsState(if (overlay) 1f else 0f, tween(300), label = "blur")
             LaunchedEffect(blur, vm.settings.blur) {
@@ -319,6 +322,7 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
             }
         }
     }
+    SideEffect { vm.dropHandler = drop }
 
     Column(
         modifier

@@ -55,6 +55,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     var currentPage = 0
     var suppressClick = false
+    var dropHandler: (() -> Unit)? = null
     var selected by mutableStateOf<Set<String>>(emptySet())
     private val uninstallQueue = ArrayDeque<AppInfo>()
     val widgetBounds = HashMap<Int, Rect>()
@@ -311,6 +312,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         drag = null
         if (d.group.isNotEmpty()) { moveGroup(d, targetPage, targetIndex, toDock); return }
         if (d.page == DOCK_PAGE) { endDockDrag(d, targetPage, targetIndex, toDock, dockIndex, merge); return }
+        if (d.page == FOLDER_PAGE) { endFolderDrag(d, targetPage, targetIndex, toDock, dockIndex, merge); return }
 
         if (toDock) {
             val item = d.item
@@ -399,6 +401,74 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
             } else {
                 insertWithShift(p, targetPage, targetIndex, HomeItem.App(key))
+            }
+        }
+    }
+
+    fun startFolderDrag(folderId: String, index: Int, key: String, pointer: Offset, grab: Offset) {
+        drag = DragState(FOLDER_PAGE, index, HomeItem.App(key), pointer, pointer, grab, folderId = folderId)
+        menu = null
+    }
+
+    private fun endFolderDrag(
+        d: DragState,
+        targetPage: Int?,
+        targetIndex: Int?,
+        toDock: Boolean,
+        dockIndex: Int?,
+        merge: Boolean,
+    ) {
+        val key = (d.item as? HomeItem.App)?.key
+        val fid = d.folderId
+        openFolderId = null
+        if (key == null || fid == null) return
+
+        val onHome = !toDock && targetPage != null && targetIndex != null &&
+            layout.widgets.none { it.covers(targetPage, targetIndex) }
+        if (!toDock && !onHome) return                     // dropped nowhere: stays in the folder
+        if (toDock && layout.dock.size >= 5) {
+            toast("Dock is full")
+            return
+        }
+
+        if (toDock) {
+            val list = layout.dock.toMutableList()
+            list.add((dockIndex ?: list.size).coerceIn(0, list.size), key)
+            layout = layout.copy(dock = list)
+        }
+
+        editPages { p ->
+            // 1. take the app out of its folder
+            var fPage = -1
+            var fIdx = -1
+            p.forEachIndexed { pi, page ->
+                page.forEachIndexed { i, cell ->
+                    if (cell is HomeItem.Folder && cell.id == fid) { fPage = pi; fIdx = i }
+                }
+            }
+            if (fPage >= 0) {
+                val f = p[fPage][fIdx] as HomeItem.Folder
+                val rest = f.apps - key
+                p[fPage][fIdx] = when (rest.size) {
+                    0 -> null
+                    1 -> HomeItem.App(rest[0])          // last app left → folder becomes that app
+                    else -> f.copy(apps = rest)
+                }
+            }
+            if (toDock) return@editPages
+
+            // 2. put it on the home screen
+            val tp = targetPage ?: return@editPages
+            val ti = targetIndex ?: return@editPages
+            while (p.size <= tp) p += emptyPage()
+            val dst = p[tp][ti]
+            if (merge && dst != null) {
+                p[tp][ti] = when (dst) {
+                    is HomeItem.App -> listOf(dst.key, key).let { HomeItem.Folder(newId(), autoName(it), it) }
+                    is HomeItem.Folder -> dst.copy(apps = dst.apps + key)
+                }
+            } else {
+                insertWithShift(p, tp, ti, HomeItem.App(key))
             }
         }
     }
@@ -992,5 +1062,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     companion object {
         const val DOCK_PAGE = -1
+        const val FOLDER_PAGE = -2
     }
 }
