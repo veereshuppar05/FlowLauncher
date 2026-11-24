@@ -117,6 +117,7 @@ class LauncherRepo(private val ctx: Context) {
             blur = getBoolean("blur", true),
             doubleTapLock = getBoolean("dtLock", true),
             hidden = getStringSet("hidden", emptySet())!!.toSet(),
+            drawerMode = getBoolean("drawer", true),
         )
     }
 
@@ -125,6 +126,7 @@ class LauncherRepo(private val ctx: Context) {
             .putInt("cols", s.cols).putInt("rows", s.rows).putFloat("iconScale", s.iconScale)
             .putBoolean("labels", s.showLabels).putBoolean("blur", s.blur)
             .putBoolean("dtLock", s.doubleTapLock).putStringSet("hidden", s.hidden)
+            .putBoolean("drawer", s.drawerMode)
             .apply()
     }
 
