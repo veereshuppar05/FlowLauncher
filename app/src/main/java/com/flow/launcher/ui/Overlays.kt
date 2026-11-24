@@ -276,7 +276,7 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
             is MenuTarget.HomeWidget -> null
         }
         val shortcuts = remember(app) { app?.let { vm.repo.shortcuts(it) }.orEmpty() }
-        val canShortcuts = remember { vm.repo.canShowShortcuts() }
+        val canShortcuts = remember { runCatching { vm.repo.launcherApps.hasShortcutHostPermission() }.getOrDefault(false) }
         val (topActions, rowActions) = buildActions(t, vm, ctx, widgets)
 
         val padPx = with(density) { 6.dp.toPx() }          // room for pill shadows
