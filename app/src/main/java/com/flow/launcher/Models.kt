@@ -95,6 +95,7 @@ data class DragState(
     val start: Offset,
     val pointer: Offset,
     val grab: Offset,
+    val group: List<HomeItem> = emptyList(),   // non-empty when moving several selected items
 )
 
 sealed interface MenuTarget {

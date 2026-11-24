@@ -252,7 +252,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     // =============== drag & drop ===============
     fun startDrag(page: Int, index: Int, item: HomeItem, pointer: Offset, grab: Offset) {
-        drag = DragState(page, index, item, pointer, pointer, grab)
+        val group = if (editMode && selected.size > 1 && isSelected(item)) {
+            listOf(item) + layout.pages.flatten().filterNotNull().filter { it != item && isSelected(it) }
+        } else emptyList()
+        drag = DragState(page, index, item, pointer, pointer, grab, group)
         menu = null
     }
 
@@ -276,6 +279,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun endDrag(targetPage: Int?, targetIndex: Int?, toDock: Boolean) {
         val d = drag ?: return
         drag = null
+        if (d.group.isNotEmpty()) { moveGroup(d, targetPage, targetIndex, toDock); return }
         if (toDock) {
             val item = d.item
             when {
@@ -321,6 +325,63 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
             }
         }
+    }
+
+    /** Moves all selected items together, filling free cells from the drop point onward. */
+    private fun moveGroup(d: DragState, targetPage: Int?, targetIndex: Int?, toDock: Boolean) {
+        val sel = d.group.map { it.selKey() }.toSet()
+
+        if (toDock) {
+            val apps = d.group.filterIsInstance<HomeItem.App>().map { it.key }.filter { it !in layout.dock }
+            val room = (5 - layout.dock.size).coerceAtLeast(0)
+            val moving = apps.take(room)
+            if (moving.isEmpty()) {
+                toast("Dock is full")
+                editPages { }
+                return
+            }
+            if (moving.size < d.group.size) toast("${moving.size} app(s) added to dock")
+            layout = layout.copy(dock = layout.dock + moving)
+            editPages { p ->
+                p.forEach { page ->
+                    page.indices.forEach { i ->
+                        val item = page[i]
+                        if (item is HomeItem.App && item.key in moving) page[i] = null
+                    }
+                }
+            }
+            selected = emptySet()
+            return
+        }
+
+        if (targetPage == null || targetIndex == null) {
+            editPages { }
+            return
+        }
+
+        editPages { p ->
+            // 1. lift every selected item off the grid
+            p.forEach { page ->
+                page.indices.forEach { i ->
+                    val item = page[i]
+                    if (item != null && item.selKey() in sel) page[i] = null
+                }
+            }
+            // 2. drop them in order starting at the target cell
+            while (p.size <= targetPage) p += emptyPage()
+            var pi = targetPage
+            var i = targetIndex
+            for (item in d.group) {
+                while (true) {
+                    if (pi >= p.size) p += emptyPage()
+                    if (i >= slotCount) { pi++; i = 0; continue }
+                    if (p[pi][i] == null && !blocked(pi, i, layout.clock.visible, layout.widgets)) break
+                    i++
+                }
+                p[pi][i++] = item
+            }
+        }
+        selected = emptySet()
     }
 
     // =============== widgets ===============

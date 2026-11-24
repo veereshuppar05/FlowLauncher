@@ -364,8 +364,9 @@ private fun PageGrid(
             if (item == null) return@forEachIndexed
             val col = index % s.cols
             val row = index / s.cols
-            val isDragged = vm.menu == null &&
-                vm.drag?.let { it.page == page && it.index == index } == true
+            val dragNow = vm.drag
+            val isDragged = vm.menu == null && dragNow != null &&
+                ((dragNow.page == page && dragNow.index == index) || dragNow.group.contains(item))
             val dist = hypot((col + 0.5f) / s.cols - originX, (row + 0.5f) / s.rows - originY)
             val t = ((entry - dist * 0.4f) / 0.6f).coerceIn(0f, 1f)
 
@@ -386,8 +387,10 @@ private fun PageGrid(
                                 vm.suppressClick = true               // the release must not open the app
                                 val pointer = origin() + Offset(col * cw, row * ch) + off
                                 vm.startDrag(page, index, item, pointer, off)
-                                anchor.rect = Rect(origin() + Offset(col * cw, row * ch), Size(cw, ch))
-                                vm.showMenuFor(page, index)
+                                if (vm.drag?.group.isNullOrEmpty()) {          // no menu when moving a group
+                                    anchor.rect = Rect(origin() + Offset(col * cw, row * ch), Size(cw, ch))
+                                    vm.showMenuFor(page, index)
+                                }
                             },
                             onDrag = { change, amount ->
                                 change.consume()
@@ -462,10 +465,27 @@ private fun DragGhost(vm: LauncherViewModel, d: DragState) {
             .graphicsLayer { scaleX = 1.12f; scaleY = 1.12f; alpha = 0.95f },
         contentAlignment = Alignment.Center,
     ) {
-        when (val item = d.item) {
-            is HomeItem.App -> vm.appMap[item.key]?.let { AppIcon(it, iconSize, s.showLabels) {} }
-            is HomeItem.Folder -> FolderIcon(item, vm.appMap, iconSize, s.showLabels) {}
+        if (d.group.size > 1) {
+            // stacked icons + count
+            Box {
+                val stack = d.group.take(3)
+                stack.reversed().forEachIndexed { i, item ->
+                    val shift = ((stack.size - 1 - i) * 6).dp
+                    Box(Modifier.offset(x = shift, y = shift)) { GhostItem(vm, item, iconSize, false) }
+                }
+                NotifDot(d.group.size, Modifier.align(Alignment.TopEnd).offset(x = 8.dp, y = (-8).dp))
+            }
+        } else {
+            GhostItem(vm, d.item, iconSize, s.showLabels)
         }
+    }
+}
+
+@Composable
+private fun GhostItem(vm: LauncherViewModel, item: HomeItem, iconSize: Dp, showLabel: Boolean) {
+    when (item) {
+        is HomeItem.App -> vm.appMap[item.key]?.let { AppIcon(it, iconSize, showLabel) {} }
+        is HomeItem.Folder -> FolderIcon(item, vm.appMap, iconSize, showLabel) {}
     }
 }
 
@@ -611,7 +631,7 @@ private fun SelectBadge(selected: Boolean, modifier: Modifier = Modifier) {
 private fun SelectionBar(vm: LauncherViewModel) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
         Text(
-            "${vm.selected.size} selected",
+            "${vm.selected.size} selected · hold & drag to move together",
             style = LabelStyle.copy(fontSize = 13.sp),
             modifier = Modifier.padding(start = 6.dp, bottom = 6.dp),
         )
