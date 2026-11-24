@@ -34,6 +34,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        vm.flush()
         runCatching { widgets.host.stopListening() }
         vm.privateOpen = false   // re-lock private space when leaving home
     }

@@ -25,6 +25,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val ctx: Application get() = getApplication()
     val repo = LauncherRepo(application)
     private var loaded = false
+    private var emptyRetries = 0
+    private var unavailable: Set<Long> = emptySet()
+
+    /** An app key is kept if the app is installed, or belongs to a paused/locked profile. */
+    private fun stillValid(key: String): Boolean =
+        key in appMap || key.substringAfterLast('#').toLongOrNull()?.let { it in unavailable } == true
+
     private var idSeq = 0
 
     var apps by mutableStateOf<List<AppInfo>>(emptyList()); private set
@@ -68,10 +75,25 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun refresh() {
         viewModelScope.launch {
             val pack = settings.iconPack
-            val list = withContext(Dispatchers.Default) { repo.loadApps(pack) }
+            val list = withContext(Dispatchers.Default) {
+                runCatching { repo.loadApps(pack) }.getOrDefault(emptyList())
+            }
+            val base = if (loaded) layout else repo.loadLayout()
+
+            if (list.isEmpty()) {
+                // System not ready yet (e.g. just after reboot): never overwrite the saved layout.
+                if (base != null) layout = base
+                if (emptyRetries++ < 5) {
+                    kotlinx.coroutines.delay(1500)
+                    refresh()
+                }
+                return@launch
+            }
+            emptyRetries = 0
+
             apps = list
             appMap = list.associateBy { it.key }
-            val base = if (loaded) layout else repo.loadLayout()
+            unavailable = repo.unavailableSerials()
             layout = if (base == null) defaultLayout() else reconcile(base)
             loaded = true
             if (!settings.drawerMode) ensureAllOnHome()
@@ -197,7 +219,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         return if (cats.size == 1 && cats[0] != "Other") cats[0] else "Folder"
     }
 
-    fun saveLayout() = repo.saveLayout(layout)
+    /** Never save before the real layout has been loaded (protects against wiping it). */
+    fun saveLayout() {
+        if (loaded) repo.saveLayout(layout)
+    }
+
+    /** Write everything to storage immediately (called when the launcher goes to background). */
+    fun flush() {
+        if (loaded) repo.saveLayout(layout, sync = true)
+        repo.saveSettings(settings, sync = true)
+    }
 
     // =============== building ===============
     private fun defaultLayout(): LayoutState {
@@ -211,11 +242,10 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun reconcile(l: LayoutState): LayoutState {
-        val valid = appMap.keys
         fun clean(item: HomeItem?): HomeItem? = when (item) {
             null -> null
-            is HomeItem.App -> item.takeIf { it.key in valid }
-            is HomeItem.Folder -> item.apps.filter { it in valid }.let { a ->
+            is HomeItem.App -> item.takeIf { stillValid(it.key) }
+            is HomeItem.Folder -> item.apps.filter { stillValid(it) }.let { a ->
                 when (a.size) {
                     0 -> null
                     1 -> HomeItem.App(a[0])
@@ -231,8 +261,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             .forEach { place(pages, HomeItem.App(it.key), l.clock.visible, l.widgets) }
         return l.copy(
             pages = trim(pages, l.widgets),
-            dock = l.dock.filter { it in valid },
-            known = valid.toSet(),
+            dock = l.dock.filter { stillValid(it) },
+            known = l.known.filter { stillValid(it) }.toSet() + appMap.keys,
         )
     }
 
@@ -495,6 +525,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         val key = layout.dock.getOrNull(index) ?: return
         layout = layout.copy(dock = layout.dock.filterIndexed { i, _ -> i != index })
         addToHome(key)
+        saveLayout()
     }
 
     fun ungroup(page: Int, index: Int) {

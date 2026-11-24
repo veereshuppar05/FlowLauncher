@@ -52,6 +52,12 @@ class LauncherRepo(private val ctx: Context) {
         }.filter { it.packageName != ctx.packageName }.sortedBy { it.label.lowercase() }
     }
 
+    /** Serial numbers of profiles that are paused or locked (e.g. work profile turned off). */
+    fun unavailableSerials(): Set<Long> = users.userProfiles
+        .filter { runCatching { users.isQuietModeEnabled(it) || !users.isUserUnlocked(it) }.getOrDefault(false) }
+        .map { users.getSerialNumberForUser(it) }
+        .toSet()
+
     fun defaultDockPackages(): List<String> {
         val pm = ctx.packageManager
         return listOf(
@@ -64,7 +70,7 @@ class LauncherRepo(private val ctx: Context) {
     }
 
     // ---------- layout ----------
-    fun saveLayout(l: LayoutState) {
+    fun saveLayout(l: LayoutState, sync: Boolean = false) {
         val pages = JSONArray()
         l.pages.forEach { page ->
             val arr = JSONArray()
@@ -91,7 +97,8 @@ class LauncherRepo(private val ctx: Context) {
             .put("s", l.clock.scale.toDouble()).put("v", l.clock.visible)
         val json = JSONObject().put("pages", pages).put("dock", JSONArray(l.dock))
             .put("known", JSONArray(l.known.toList())).put("clock", clock).put("widgets", widgets)
-        layoutPrefs.edit().putString("layout", json.toString()).apply()
+        val e = layoutPrefs.edit().putString("layout", json.toString())
+        if (sync) e.commit() else e.apply()
     }
 
     fun loadLayout(): LayoutState? {
@@ -152,7 +159,7 @@ class LauncherRepo(private val ctx: Context) {
         )
     }
 
-    fun saveSettings(s: LauncherSettings) {
+    fun saveSettings(s: LauncherSettings, sync: Boolean = false) {
         val e = settingsPrefs.edit()
             .putInt("cols", s.cols).putInt("rows", s.rows).putFloat("iconScale", s.iconScale)
             .putBoolean("labels", s.showLabels).putBoolean("blur", s.blur)
@@ -160,7 +167,7 @@ class LauncherRepo(private val ctx: Context) {
             .putString("pack", s.iconPack).putString("shape", s.iconShape.name)
             .putBoolean("badges", s.badges).putBoolean("lockPrivate", s.lockPrivate)
         s.gestures.forEach { (g, a) -> e.putString("g_${g.name}", a.name) }
-        e.apply()
+        if (sync) e.commit() else e.apply()
     }
 
     // ---------- on-device suggestions ----------
