@@ -7,9 +7,11 @@ import android.provider.AlarmClock
 import android.text.format.DateFormat
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -49,7 +51,7 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
-private val GridPad = 12.dp
+private val GridPad = 16.dp
 
 /** One icon size for the whole launcher (home, dock, drawer, folders, private space, drag). */
 @Composable
@@ -62,6 +64,14 @@ internal fun rememberIconSize(vm: LauncherViewModel): Dp {
     val cw = (g.width - 2 * pad) / s.cols
     val ch = g.height / s.rows
     return with(density) { (minOf(cw, ch) * 0.62f * s.iconScale).toDp() }.coerceAtMost(76.dp)
+}
+
+/** Drag facts that do NOT change while the finger moves (so the grid doesn't redraw every frame). */
+private data class DragInfo(val page: Int, val index: Int, val group: List<HomeItem>, val menuOpen: Boolean)
+
+private fun HomeItem.uid(): String = when (this) {
+    is HomeItem.App -> "a:$key"
+    is HomeItem.Folder -> "f:$id"
 }
 
 // ======================= Root =======================
@@ -83,6 +93,8 @@ fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur
             LaunchedEffect(blur, vm.settings.blur) {
                 setWindowBlur(if (vm.settings.blur) (blur * 80).toInt() else 0)
             }
+            val ghostOn by remember { derivedStateOf { vm.drag != null && vm.menu == null } }
+
             Box(Modifier.fillMaxSize()) {
                 HomeScreen(
                     vm,
@@ -122,7 +134,7 @@ fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur
                     exit = fadeOut() + scaleOut(targetScale = 0.92f),
                 ) { SettingsPanel(vm) }
 
-                if (vm.menu == null) vm.drag?.let { DragGhost(vm, it) }
+                if (ghostOn) DragGhost(vm)
 
                 ContextMenuOverlay(vm)
             }
@@ -153,6 +165,8 @@ private fun Modifier.homeGestures(vm: LauncherViewModel, onGesture: (Gesture) ->
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
         if (vm.editMode || vm.drag != null) return@awaitEachGesture
+        val edgeGuard = 14.dp.toPx()                       // curved-screen palm rejection
+        if (down.position.x < edgeGuard || down.position.x > size.width - edgeGuard) return@awaitEachGesture
         val onWidget = vm.widgetBounds.values.any { it.contains(down.position) }
         var multi = false
         var pan = Offset.Zero
@@ -197,10 +211,9 @@ private fun Modifier.homeGestures(vm: LauncherViewModel, onGesture: (Gesture) ->
 private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Gesture) -> Unit) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val padPx = with(density) { 12.dp.toPx() }
+    val padPx = with(density) { GridPad.toPx() }
     val edgePx = with(density) { 36.dp.toPx() }
     val pager = rememberPagerState { vm.layout.pages.size }
-    val entry = remember { Animatable(1f) }
     var gridBounds by remember { mutableStateOf(Rect.Zero) }
     var dockBounds by remember { mutableStateOf(Rect.Zero) }
 
@@ -213,39 +226,7 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
     }
     LaunchedEffect(pager.currentPage) { vm.currentPage = pager.currentPage }
 
-    // Hold a dragged icon at the screen edge to flip pages
-    val dragging = vm.drag != null
-    LaunchedEffect(dragging) {
-        while (vm.drag != null) {
-            val d = vm.drag ?: break
-            val moved = (d.pointer - d.start).getDistance() > 40f
-            val x = d.pointer.x
-            val dir = when {
-                !moved -> 0
-                x < gridBounds.left + edgePx -> -1
-                x > gridBounds.right - edgePx -> 1
-                else -> 0
-            }
-            if (dir == 0) {
-                delay(60)
-                continue
-            }
-            delay(500)
-            val x2 = vm.drag?.pointer?.x ?: break
-            val still = if (dir < 0) x2 < gridBounds.left + edgePx else x2 > gridBounds.right - edgePx
-            if (!still) continue
-            val target = pager.currentPage + dir
-            if (target == vm.layout.pages.size && vm.layout.pages.lastOrNull()?.any { it != null } == true) {
-                vm.addEmptyPage()
-            }
-            if (target in 0 until vm.layout.pages.size) {
-                pager.animateScrollToPage(target)
-                delay(400)
-            }
-        }
-    }
-
-    /** Which cell the dragged icon is over, and whether it's over an icon's centre (→ folder). */
+    /** Cell under the dragged icon, and whether it's over an icon's centre (→ folder). */
     fun target(d: DragState): Pair<Int, Boolean>? {
         val s = vm.settings
         val cw = (gridBounds.width - 2 * padPx) / s.cols
@@ -265,19 +246,66 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
         return idx to merge
     }
 
-    val hover: Pair<Int, Boolean>? = vm.drag?.let { target(it) }
-
-    /** Which gap in the dock the dragged app would land in (null = not over dock / not allowed). */
+    /** Which gap in the dock the dragged app would land in. */
     fun dockSlot(d: DragState): Int? {
         if (dockBounds.width <= 0f || !dockBounds.contains(d.pointer)) return null
         val fromDock = d.page == LauncherViewModel.DOCK_PAGE
         if (!fromDock && (d.item !is HomeItem.App || d.group.isNotEmpty() || vm.layout.dock.size >= 5)) return null
         val m = vm.layout.dock.size - if (fromDock) 1 else 0
         val frac = (d.pointer.x - dockBounds.left) / dockBounds.width
-        return (frac * (m + 2) - 1f).roundToInt().coerceIn(0, m)
+        return (frac * (m + 1)).toInt().coerceIn(0, m)
     }
 
-    val dockHover: Int? = vm.drag?.takeIf { vm.menu == null }?.let { dockSlot(it) }
+    // These only change when the result changes – not on every finger movement
+    val dragInfo by remember {
+        derivedStateOf { vm.drag?.let { DragInfo(it.page, it.index, it.group, vm.menu != null) } }
+    }
+    val hover by remember {
+        derivedStateOf { vm.drag?.takeIf { vm.menu == null }?.let { target(it) } }
+    }
+    val dockHover by remember {
+        derivedStateOf { vm.drag?.takeIf { vm.menu == null }?.let { dockSlot(it) } }
+    }
+    val preview by remember {
+        derivedStateOf {
+            val d = vm.drag
+            val h = hover
+            if (d == null || h == null || h.second || d.group.isNotEmpty() || vm.menu != null) emptyMap()
+            else vm.shiftPreview(pager.currentPage, h.first)
+        }
+    }
+
+    // Hold a dragged icon at the screen edge to flip pages
+    val dragging = dragInfo != null
+    LaunchedEffect(dragging) {
+        while (vm.drag != null) {
+            val d = vm.drag ?: break
+            val moved = (d.pointer - d.start).getDistance() > 40f
+            val x = d.pointer.x
+            val dir = when {
+                !moved -> 0
+                x < gridBounds.left + edgePx -> -1
+                x > gridBounds.right - edgePx -> 1
+                else -> 0
+            }
+            if (dir == 0) {
+                delay(60)
+                continue
+            }
+            delay(500)
+            val x2 = vm.drag?.pointer?.x ?: break
+            val still = if (dir < 0) x2 < gridBounds.left + edgePx else x2 > gridBounds.right - edgePx
+            if (!still) continue
+            val targetPage = pager.currentPage + dir
+            if (targetPage == vm.layout.pages.size && vm.layout.pages.lastOrNull()?.any { it != null } == true) {
+                vm.addEmptyPage()
+            }
+            if (targetPage in 0 until vm.layout.pages.size) {
+                pager.animateScrollToPage(targetPage)
+                delay(400)
+            }
+        }
+    }
 
     val drop: () -> Unit = {
         val d = vm.drag
@@ -312,34 +340,33 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
         Box(
             Modifier.weight(1f).fillMaxWidth().onGloballyPositioned { c ->
                 gridBounds = c.boundsInRoot()
-                vm.gridSize = c.size.toSize()
+                vm.gridSize = Size(c.size.width.toFloat(), c.size.height.toFloat())
             }
         ) {
             HorizontalPager(
                 pager,
                 Modifier.fillMaxSize(),
-                userScrollEnabled = vm.drag == null,
+                userScrollEnabled = dragInfo == null,
                 beyondViewportPageCount = 2,
             ) { page ->
                 PageGrid(
-                    vm, page, entry.value, { Offset(gridBounds.left + padPx, gridBounds.top) }, drop,
-                    hover = hover, hoverPage = pager.currentPage,
+                    vm = vm,
+                    page = page,
+                    origin = { Offset(gridBounds.left + padPx, gridBounds.top) },
+                    onDrop = drop,
+                    dragInfo = dragInfo,
+                    hover = hover,
+                    preview = if (page == pager.currentPage) preview else emptyMap(),
+                    hoverPage = pager.currentPage,
                 )
             }
         }
         PageDots(vm.layout.pages.size, pager.currentPage)
-        Dock(vm, dockHover, drop) { dockBounds = it }
+        Dock(vm, dragInfo, dockHover, drop) { dockBounds = it }
         AnimatedVisibility(vm.editMode) {
             if (vm.selected.isEmpty()) EditBar(vm) else SelectionBar(vm)
         }
     }
-}
-
-private fun backOut(t: Float): Float {
-    val c1 = 1.70158f
-    val c3 = c1 + 1f
-    val u = t - 1f
-    return 1f + c3 * u * u * u + c1 * u * u
 }
 
 @Composable
@@ -357,11 +384,12 @@ private fun Modifier.wiggle(seed: Int): Modifier {
 private fun PageGrid(
     vm: LauncherViewModel,
     page: Int,
-    entry: Float,
     origin: () -> Offset,
     onDrop: () -> Unit,
-    hover: Pair<Int, Boolean>? = null,
-    hoverPage: Int = -1,
+    dragInfo: DragInfo?,
+    hover: Pair<Int, Boolean>?,
+    preview: Map<Int, Int>,
+    hoverPage: Int,
 ) {
     val s = vm.settings
     val slots = vm.layout.pages.getOrNull(page) ?: return
@@ -375,13 +403,12 @@ private fun PageGrid(
         val cw = with(density) { cellW.toPx() }
         val ch = with(density) { cellH.toPx() }
         val iconSize = rememberIconSize(vm)
-        val clock = vm.layout.clock
 
-        if (page == 0 && clock.visible) FlowClock(vm, maxWidth, maxHeight, entry)
+        if (page == 0 && vm.layout.clock.visible) FlowClock(vm, maxWidth, maxHeight)
 
         // ---- widgets ----
         vm.layout.widgets.filter { it.page == page }.forEach { w ->
-            key(w.appWidgetId) {
+            key("w:${w.appWidgetId}") {
                 Box(
                     Modifier
                         .offset { IntOffset((w.col * cw).roundToInt(), (w.row * ch).roundToInt()) }
@@ -401,89 +428,100 @@ private fun PageGrid(
         }
 
         // ---- icons ----
-        val originX = if (clock.visible) clock.x + 0.3f else 0.5f
-        val originY = if (clock.visible) clock.y + 0.1f else 0f
-
         slots.forEachIndexed { index, item ->
             if (item == null) return@forEachIndexed
-            val col = index % s.cols
-            val row = index / s.cols
-            val dragNow = vm.drag
-            val isDragged = vm.menu == null && dragNow != null &&
-                ((dragNow.page == page && dragNow.index == index) || dragNow.group.contains(item))
-            val dist = hypot((col + 0.5f) / s.cols - originX, (row + 0.5f) / s.rows - originY)
-            val t = ((entry - dist * 0.4f) / 0.6f).coerceIn(0f, 1f)
+            key(item.uid()) {
+                val col = index % s.cols
+                val row = index / s.cols
+                val isDragged = dragInfo != null && !dragInfo.menuOpen &&
+                    ((dragInfo.page == page && dragInfo.index == index) || dragInfo.group.contains(item))
 
-            Box(
-                Modifier
-                    .offset { IntOffset((col * cw).roundToInt(), (row * ch).roundToInt()) }
-                    .size(cellW, cellH)
-                    .graphicsLayer {
-                        val sc = 0.7f + 0.3f * backOut(t)
-                        scaleX = sc; scaleY = sc
-                        alpha = if (isDragged) 0f else t
-                    }
-                    .then(if (vm.editMode && !isDragged) Modifier.wiggle(index) else Modifier)
-                    .pointerInput(page, index, item, s.cols, s.rows) {
-                        detectDragGesturesAfterLongPress(
-                            onDragStart = { off ->
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                vm.suppressClick = true               // the release must not open the app
-                                val pointer = origin() + Offset(col * cw, row * ch) + off
-                                vm.startDrag(page, index, item, pointer, off)
-                                if (vm.drag?.group.isNullOrEmpty()) {          // no menu when moving a group
-                                    anchor.rect = Rect(origin() + Offset(col * cw, row * ch), Size(cw, ch))
-                                    vm.showMenuFor(page, index)
-                                }
-                            },
-                            onDrag = { change, amount ->
-                                change.consume()
-                                vm.dragBy(amount)
-                            },
-                            onDragEnd = {
-                                val d = vm.drag
-                                if (d != null && (d.pointer - d.start).getDistance() < 24f) {
-                                    vm.cancelDrag()
-                                } else {
-                                    onDrop()
-                                }
-                                vm.suppressClick = false
-                            },
-                            onDragCancel = {
-                                vm.cancelDrag()
-                                vm.suppressClick = false
-                            },
-                        )
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                val folderHover = hover != null && hover.second && hoverPage == page && hover.first == index
-                if (folderHover) {
-                    // glowing frame = "drop here to make a folder"
-                    Box(
-                        Modifier.size(iconSize * 1.3f)
-                            .glass(RoundedCornerShape(iconSize * 0.38f), 0.32f)
-                    )
+                // Where this icon should be right now (live "move aside" preview)
+                val shown = preview[index] ?: index
+                val leaving = shown < 0
+                val goal = if (leaving) {
+                    IntOffset((col * cw).roundToInt(), (row * ch).roundToInt())
+                } else {
+                    IntOffset(((shown % s.cols) * cw).roundToInt(), ((shown / s.cols) * ch).roundToInt())
                 }
-                Box(Modifier.graphicsLayer {
-                    val sc = if (folderHover) 1.08f else 1f
-                    scaleX = sc; scaleY = sc
-                }) {
-                    when (item) {
-                        is HomeItem.App -> vm.appMap[item.key]?.let { app ->
-                            AppIcon(app, iconSize, s.showLabels) {
+                val pos = remember { Animatable(goal, IntOffset.VectorConverter) }
+                val wasDragged = remember { booleanArrayOf(false) }
+                LaunchedEffect(goal, isDragged) {
+                    when {
+                        isDragged -> wasDragged[0] = true
+                        wasDragged[0] -> {
+                            wasDragged[0] = false
+                            pos.snapTo(goal)
+                        }
+                        else -> pos.animateTo(goal, spring(dampingRatio = 0.82f, stiffness = 420f))
+                    }
+                }
+                val fade by animateFloatAsState(if (leaving) 0f else 1f, tween(180), label = "fade")
+                val folderHover = hover != null && hover.second && hoverPage == page && hover.first == index
+
+                Box(
+                    Modifier
+                        .offset { pos.value }
+                        .size(cellW, cellH)
+                        .graphicsLayer {
+                            val sc = 0.6f + 0.4f * fade
+                            scaleX = sc; scaleY = sc
+                            alpha = if (isDragged) 0f else fade
+                        }
+                        .then(if (vm.editMode && !isDragged) Modifier.wiggle(index) else Modifier)
+                        .pointerInput(page, index, item, s.cols, s.rows) {
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { off ->
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    vm.suppressClick = true
+                                    val pointer = origin() + Offset(col * cw, row * ch) + off
+                                    vm.startDrag(page, index, item, pointer, off)
+                                    if (vm.drag?.group.isNullOrEmpty()) {
+                                        anchor.rect = Rect(origin() + Offset(col * cw, row * ch), Size(cw, ch))
+                                        vm.showMenuFor(page, index)
+                                    }
+                                },
+                                onDrag = { change, amount ->
+                                    change.consume()
+                                    vm.dragBy(amount)
+                                },
+                                onDragEnd = {
+                                    val d = vm.drag
+                                    if (d != null && (d.pointer - d.start).getDistance() < 24f) vm.cancelDrag()
+                                    else onDrop()
+                                    vm.suppressClick = false
+                                },
+                                onDragCancel = {
+                                    vm.cancelDrag()
+                                    vm.suppressClick = false
+                                },
+                            )
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (folderHover) {
+                        Box(Modifier.size(iconSize * 1.3f).glass(RoundedCornerShape(iconSize * 0.38f), 0.32f))
+                    }
+                    Box(Modifier.graphicsLayer {
+                        val sc = if (folderHover) 1.08f else 1f
+                        scaleX = sc; scaleY = sc
+                    }) {
+                        when (item) {
+                            is HomeItem.App -> vm.appMap[item.key]?.let { app ->
+                                AppIcon(app, iconSize, s.showLabels) {
+                                    when {
+                                        vm.suppressClick -> vm.suppressClick = false
+                                        vm.editMode -> vm.toggleSelect(item)
+                                        else -> vm.launch(app)
+                                    }
+                                }
+                            }
+                            is HomeItem.Folder -> FolderIcon(item, vm.appMap, iconSize, s.showLabels) {
                                 when {
                                     vm.suppressClick -> vm.suppressClick = false
                                     vm.editMode -> vm.toggleSelect(item)
-                                    else -> vm.launch(app)
+                                    else -> vm.openFolderId = item.id
                                 }
-                            }
-                        }
-                        is HomeItem.Folder -> FolderIcon(item, vm.appMap, iconSize, s.showLabels) {
-                            when {
-                                vm.suppressClick -> vm.suppressClick = false
-                                vm.editMode -> vm.toggleSelect(item)
-                                else -> vm.openFolderId = item.id
                             }
                         }
                     }
@@ -499,39 +537,42 @@ private fun PageGrid(
     }
 }
 
-/** The icon that follows your finger while dragging (drawn above everything, across pages). */
+/** The icon that follows your finger. Only its position changes per frame. */
 @Composable
-private fun DragGhost(vm: LauncherViewModel, d: DragState) {
+private fun DragGhost(vm: LauncherViewModel) {
+    val content by remember { derivedStateOf { vm.drag?.let { it.item to it.group } } }
+    val (item, group) = content ?: return
     val density = LocalDensity.current
     val s = vm.settings
     val g = vm.gridSize
     if (g.width <= 0f) return
-    val padPx = with(density) { 12.dp.toPx() }
-    val cwPx = (g.width - 2 * padPx) / s.cols
-    val chPx = g.height / s.rows
-    val w = with(density) { cwPx.toDp() }
-    val h = with(density) { chPx.toDp() }
+    val padPx = with(density) { GridPad.toPx() }
+    val w = with(density) { ((g.width - 2 * padPx) / s.cols).toDp() }
+    val h = with(density) { (g.height / s.rows).toDp() }
     val iconSize = rememberIconSize(vm)
     Box(
         Modifier
-            .offset { IntOffset((d.pointer.x - d.grab.x).roundToInt(), (d.pointer.y - d.grab.y).roundToInt()) }
+            .offset {
+                vm.drag?.let {
+                    IntOffset((it.pointer.x - it.grab.x).roundToInt(), (it.pointer.y - it.grab.y).roundToInt())
+                } ?: IntOffset.Zero
+            }
             .size(w, h)
             .zIndex(20f)
             .graphicsLayer { scaleX = 1.12f; scaleY = 1.12f; alpha = 0.95f },
         contentAlignment = Alignment.Center,
     ) {
-        if (d.group.size > 1) {
-            // stacked icons + count
+        if (group.size > 1) {
             Box {
-                val stack = d.group.take(3)
+                val stack = group.take(3)
                 stack.reversed().forEachIndexed { i, item ->
                     val shift = ((stack.size - 1 - i) * 6).dp
                     Box(Modifier.offset(x = shift, y = shift)) { GhostItem(vm, item, iconSize, false) }
                 }
-                NotifDot(d.group.size, Modifier.align(Alignment.TopEnd).offset(x = 8.dp, y = (-8).dp))
+                NotifDot(group.size, Modifier.align(Alignment.TopEnd).offset(x = 8.dp, y = (-8).dp))
             }
         } else {
-            GhostItem(vm, d.item, iconSize, s.showLabels)
+            GhostItem(vm, item, iconSize, s.showLabels)
         }
     }
 }
@@ -544,14 +585,16 @@ private fun GhostItem(vm: LauncherViewModel, item: HomeItem, iconSize: Dp, showL
     }
 }
 
+// ======================= Clock =======================
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FlowClock(vm: LauncherViewModel, areaW: Dp, areaH: Dp, entry: Float) {
+private fun FlowClock(vm: LauncherViewModel, areaW: Dp, areaH: Dp) {
     val ctx = LocalContext.current
     var now by remember { mutableStateOf(LocalDateTime.now()) }
     LaunchedEffect(Unit) {
         while (true) {
             now = LocalDateTime.now()
-            delay(1000L - System.currentTimeMillis() % 1000)
+            delay(60_000L - System.currentTimeMillis() % 60_000L)
         }
     }
     val c = vm.layout.clock
@@ -563,7 +606,6 @@ private fun FlowClock(vm: LauncherViewModel, areaW: Dp, areaH: Dp, entry: Float)
     val density = LocalDensity.current
     val wPx = with(density) { areaW.toPx() }
     val hPx = with(density) { areaH.toPx() }
-    val settle = 1.25f - 0.25f * FastOutSlowInEasing.transform(entry)
 
     val transform = rememberTransformableState { zoom, pan, _ ->
         val cur = vm.layout.clock
@@ -580,6 +622,8 @@ private fun FlowClock(vm: LauncherViewModel, areaW: Dp, areaH: Dp, entry: Float)
         if (!transform.isTransformInProgress) vm.saveLayout()
     }
     val tapSource = remember { MutableInteractionSource() }
+    val anchor = LocalMenuAnchor.current
+    val clockBounds = remember { arrayOf(Rect.Zero) }
     val glow = Brush.verticalGradient(listOf(Color.White, Color.White.copy(alpha = 0.72f)))
     val digitStyle = TextStyle(
         brush = glow, fontSize = 96.sp, fontWeight = FontWeight.Light,
@@ -592,7 +636,7 @@ private fun FlowClock(vm: LauncherViewModel, areaW: Dp, areaH: Dp, entry: Float)
             .offset { IntOffset((c.x * wPx).roundToInt(), (c.y * hPx).roundToInt()) }
             .zIndex(1f)
             .graphicsLayer {
-                scaleX = c.scale * settle; scaleY = c.scale * settle
+                scaleX = c.scale; scaleY = c.scale
                 transformOrigin = TransformOrigin(0f, 0f)
             }
             .then(
@@ -600,11 +644,20 @@ private fun FlowClock(vm: LauncherViewModel, areaW: Dp, areaH: Dp, entry: Float)
                     .transformable(transform)
                     .border(1.dp, Color.White.copy(alpha = 0.5f), RoundedCornerShape(18.dp))
                     .padding(10.dp)
-                else Modifier.clickable(interactionSource = tapSource, indication = null) {
-                    runCatching {
-                        ctx.startActivity(Intent(AlarmClock.ACTION_SHOW_ALARMS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                else Modifier
+                    .onGloballyPositioned { clockBounds[0] = it.boundsInRoot() }
+                    .combinedClickable(
+                        interactionSource = tapSource,
+                        indication = null,
+                        onLongClick = {
+                            anchor.rect = clockBounds[0]
+                            vm.menu = MenuTarget.Clock
+                        },
+                    ) {
+                        runCatching {
+                            ctx.startActivity(Intent(AlarmClock.ACTION_SHOW_ALARMS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                        }
                     }
-                }
             ),
     ) {
         Text(hour, style = digitStyle)
@@ -630,33 +683,53 @@ private fun PageDots(count: Int, current: Int) {
     }
 }
 
+// ======================= Dock =======================
 @Composable
-private fun Dock(vm: LauncherViewModel, insertAt: Int?, onDrop: () -> Unit, onBounds: (Rect) -> Unit) {
-    val d = vm.drag
+private fun Dock(
+    vm: LauncherViewModel,
+    dragInfo: DragInfo?,
+    insertAt: Int?,
+    onDrop: () -> Unit,
+    onBounds: (Rect) -> Unit,
+) {
     val keys = vm.layout.dock
-    if (keys.isEmpty() && d == null) return
-    // Hide the dock icon that is being dragged (once the menu has closed)
-    val draggingIndex = if (d != null && d.page == LauncherViewModel.DOCK_PAGE && vm.menu == null) d.index else -1
+    if (keys.isEmpty() && dragInfo == null) return
+    val draggingIndex =
+        if (dragInfo != null && dragInfo.page == LauncherViewModel.DOCK_PAGE && !dragInfo.menuOpen) dragInfo.index else -1
     val iconSize = rememberIconSize(vm)
     Row(
         Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth()
             .heightIn(min = 78.dp)
             .onGloballyPositioned { onBounds(it.boundsInRoot()) }
-            .glass(RoundedCornerShape(30.dp), if (d != null) 0.22f else 0.12f)
-            .padding(vertical = 12.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
+            .glass(RoundedCornerShape(30.dp), if (dragInfo != null) 0.22f else 0.12f)
+            .padding(vertical = 12.dp, horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         var shown = 0
         keys.forEachIndexed { i, k ->
             if (i == draggingIndex) return@forEachIndexed
-            if (insertAt == shown) Spacer(Modifier.size(iconSize))      // the gap where the app will land
+            DockGap(insertAt == shown, iconSize)
             shown++
             val app = vm.appMap[k] ?: return@forEachIndexed
-            key(k) { DockIcon(vm, i, app, iconSize, onDrop) }
+            key(k) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    DockIcon(vm, i, app, iconSize, onDrop)
+                }
+            }
         }
-        if (insertAt != null && insertAt >= shown) Spacer(Modifier.size(iconSize))
+        DockGap(insertAt != null && insertAt >= shown, iconSize)
     }
+}
+
+/** A gap that smoothly opens where a dragged app will land in the dock. */
+@Composable
+private fun DockGap(open: Boolean, iconSize: Dp) {
+    val w by animateDpAsState(
+        if (open) iconSize + 16.dp else 0.dp,
+        spring(dampingRatio = 0.85f, stiffness = 500f),
+        label = "gap",
+    )
+    Spacer(Modifier.width(w))
 }
 
 @Composable
@@ -664,7 +737,6 @@ private fun DockIcon(vm: LauncherViewModel, index: Int, app: AppInfo, iconSize: 
     val haptic = LocalHapticFeedback.current
     val anchor = LocalMenuAnchor.current
     val bounds = remember { arrayOf(Rect.Zero) }
-    val pad = with(LocalDensity.current) { 12.dp.toPx() }
     Box(
         Modifier
             .onGloballyPositioned { bounds[0] = it.boundsInRoot() }
@@ -675,9 +747,9 @@ private fun DockIcon(vm: LauncherViewModel, index: Int, app: AppInfo, iconSize: 
                         vm.suppressClick = true
                         val b = bounds[0]
                         val s = vm.settings
+                        val pad = GridPad.toPx()
                         val cw = (vm.gridSize.width - 2 * pad) / s.cols
                         val ch = vm.gridSize.height / s.rows
-                        // keep the dragged icon centred under the finger
                         val grab = Offset(cw / 2f, ch / 2f) + off - Offset(b.width / 2f, b.height / 2f)
                         vm.startDockDrag(index, app.key, b.topLeft + off, grab)
                         anchor.rect = b

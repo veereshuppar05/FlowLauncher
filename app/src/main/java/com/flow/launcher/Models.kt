@@ -99,6 +99,7 @@ data class DragState(
 )
 
 sealed interface MenuTarget {
+    data object Clock : MenuTarget
     data class HomeApp(val page: Int, val index: Int, val app: AppInfo) : MenuTarget
     data class HomeFolder(val page: Int, val index: Int, val folder: HomeItem.Folder) : MenuTarget
     data class DockApp(val index: Int, val app: AppInfo) : MenuTarget

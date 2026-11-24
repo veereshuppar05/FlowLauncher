@@ -428,6 +428,52 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (carry != null) overflowToNextPage(p, toPage, carry)
     }
 
+    /**
+     * Live preview for dragging: where each icon on [page] would move if the dragged app
+     * were dropped at [target]. Value -1 = that icon would be pushed to the next page.
+     */
+    fun shiftPreview(page: Int, target: Int): Map<Int, Int> {
+        val d = drag ?: return emptyMap()
+        val slots = layout.pages.getOrNull(page) ?: return emptyMap()
+        if (target !in slots.indices) return emptyMap()
+        if (layout.widgets.any { it.covers(page, target) }) return emptyMap()
+        val samePage = d.page == page
+        if (samePage && d.index == target) return emptyMap()
+        val clock = layout.clock.visible
+
+        fun usable(i: Int): Boolean {
+            if (layout.widgets.any { it.covers(page, i) }) return false
+            val inClock = page == 0 && clock && i < settings.cols * 2
+            return !inClock || i == target || (samePage && i == d.index)
+        }
+        val cells = slots.indices.filter { usable(it) }
+        val t = cells.indexOf(target)
+        if (t < 0) return emptyMap()
+        val result = HashMap<Int, Int>()
+
+        if (samePage) {
+            val s = cells.indexOf(d.index)
+            if (s < 0) return emptyMap()
+            val order = cells.toMutableList()
+            val moving = order.removeAt(s)
+            order.add(t, moving)
+            order.forEachIndexed { k, orig ->
+                if (orig != d.index && slots[orig] != null && orig != cells[k]) result[orig] = cells[k]
+            }
+            return result
+        }
+
+        if (slots[target] == null) return emptyMap()
+        var k = t
+        while (k < cells.size) {
+            val idx = cells[k]
+            if (slots[idx] == null) break
+            result[idx] = if (k + 1 < cells.size) cells[k + 1] else -1
+            k++
+        }
+        return result
+    }
+
     /** Puts the item at the target cell and shifts the others along to make room. */
     private fun moveWithShift(p: Pages, fromPage: Int, fromIndex: Int, toPage: Int, toIndex: Int) {
         val item = p[fromPage][fromIndex] ?: return

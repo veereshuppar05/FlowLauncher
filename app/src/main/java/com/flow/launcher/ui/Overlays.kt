@@ -231,6 +231,12 @@ private fun buildActions(
         } to listOf(
             MenuAction(MenuIcons.Check, "Select multiple") { vm.startSelection(t.folder) },
         )
+        MenuTarget.Clock -> emptyList<MenuAction>() to listOf(
+            MenuAction(MenuIcons.Edit, "Move / resize clock") {
+                vm.menu = null
+                vm.editMode = true
+            },
+        )
         is MenuTarget.HomeWidget -> {
             val id = t.widget.appWidgetId
             listOf(
@@ -274,6 +280,7 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
             is MenuTarget.PrivateApp -> t.app
             is MenuTarget.HomeFolder -> null
             is MenuTarget.HomeWidget -> null
+            MenuTarget.Clock -> null
         }
         val shortcuts = remember(app) { app?.let { vm.repo.shortcuts(it) }.orEmpty() }
         val canShortcuts = remember { runCatching { vm.repo.launcherApps.hasShortcutHostPermission() }.getOrDefault(false) }
