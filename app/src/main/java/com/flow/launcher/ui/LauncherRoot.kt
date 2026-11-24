@@ -374,9 +374,10 @@ private fun PageGrid(
                         detectDragGesturesAfterLongPress(
                             onDragStart = { off ->
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                vm.suppressClick = true               // the release must not open the app
                                 val pointer = origin() + Offset(col * cw, row * ch) + off
                                 vm.startDrag(page, index, item, pointer, off)
-                                vm.showMenuFor(page, index)          // show options right away
+                                vm.showMenuFor(page, index)
                             },
                             onDrag = { change, amount ->
                                 change.consume()
@@ -385,12 +386,16 @@ private fun PageGrid(
                             onDragEnd = {
                                 val d = vm.drag
                                 if (d != null && (d.pointer - d.start).getDistance() < 24f) {
-                                    vm.cancelDrag()                  // released without moving: keep menu open
+                                    vm.cancelDrag()
                                 } else {
                                     onDrop()
                                 }
+                                vm.suppressClick = false
                             },
-                            onDragCancel = { vm.cancelDrag() },
+                            onDragCancel = {
+                                vm.cancelDrag()
+                                vm.suppressClick = false
+                            },
                         )
                     },
                 contentAlignment = Alignment.Center,
@@ -398,11 +403,18 @@ private fun PageGrid(
                 when (item) {
                     is HomeItem.App -> vm.appMap[item.key]?.let { app ->
                         AppIcon(app, iconSize, s.showLabels) {
-                            if (vm.editMode) vm.editMode = false else vm.launch(app)
+                            when {
+                                vm.suppressClick -> vm.suppressClick = false
+                                vm.editMode -> vm.editMode = false
+                                else -> vm.launch(app)
+                            }
                         }
                     }
                     is HomeItem.Folder -> FolderIcon(item, vm.appMap, iconSize, s.showLabels) {
-                        vm.openFolderId = item.id
+                        when {
+                            vm.suppressClick -> vm.suppressClick = false
+                            else -> vm.openFolderId = item.id
+                        }
                     }
                 }
             }

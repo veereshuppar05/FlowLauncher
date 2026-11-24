@@ -47,6 +47,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     var menu by mutableStateOf<MenuTarget?>(null)
 
     var currentPage = 0
+    var suppressClick = false
     val widgetBounds = HashMap<Int, Rect>()
 
     val visibleApps: List<AppInfo> get() = apps.filter { it.key !in settings.hidden }
