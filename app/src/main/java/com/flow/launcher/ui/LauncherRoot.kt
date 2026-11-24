@@ -104,7 +104,7 @@ fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur
                     exit = fadeOut() + scaleOut(targetScale = 0.92f),
                 ) { SettingsPanel(vm) }
 
-                vm.drag?.let { DragGhost(vm, it) }
+                if (vm.menu == null) vm.drag?.let { DragGhost(vm, it) }
 
                 ContextMenuOverlay(vm)
             }
@@ -355,7 +355,8 @@ private fun PageGrid(
             if (item == null) return@forEachIndexed
             val col = index % s.cols
             val row = index / s.cols
-            val isDragged = vm.drag?.let { it.page == page && it.index == index } == true
+            val isDragged = vm.menu == null &&
+                vm.drag?.let { it.page == page && it.index == index } == true
             val dist = hypot((col + 0.5f) / s.cols - originX, (row + 0.5f) / s.rows - originY)
             val t = ((entry - dist * 0.4f) / 0.6f).coerceIn(0f, 1f)
 
@@ -375,6 +376,7 @@ private fun PageGrid(
                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 val pointer = origin() + Offset(col * cw, row * ch) + off
                                 vm.startDrag(page, index, item, pointer, off)
+                                vm.showMenuFor(page, index)          // show options right away
                             },
                             onDrag = { change, amount ->
                                 change.consume()
@@ -383,8 +385,7 @@ private fun PageGrid(
                             onDragEnd = {
                                 val d = vm.drag
                                 if (d != null && (d.pointer - d.start).getDistance() < 24f) {
-                                    vm.cancelDrag()
-                                    vm.showMenuFor(page, index)
+                                    vm.cancelDrag()                  // released without moving: keep menu open
                                 } else {
                                     onDrop()
                                 }

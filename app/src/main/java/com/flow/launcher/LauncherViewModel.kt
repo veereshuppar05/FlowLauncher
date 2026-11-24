@@ -254,7 +254,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun dragBy(delta: Offset) {
-        drag = drag?.let { it.copy(pointer = it.pointer + delta) }
+        val d = drag ?: return
+        val moved = d.copy(pointer = d.pointer + delta)
+        drag = moved
+        // Finger started moving → close the menu and switch to dragging
+        if (menu != null && (moved.pointer - moved.start).getDistance() > 24f) menu = null
     }
 
     fun cancelDrag() {
