@@ -18,11 +18,10 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK 35
+      - name: Install Android 35 SDK components
         run: |
           SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -n 1)"
+          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
           yes | "$SDKMANAGER" --licenses >/dev/null
           "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0"
 
