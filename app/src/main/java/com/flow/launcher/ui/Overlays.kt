@@ -280,7 +280,7 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
         val (topActions, rowActions) = buildActions(t, vm, ctx, widgets)
 
         val padPx = with(density) { 6.dp.toPx() }          // room for pill shadows
-        val marginPx = with(density) { 10.dp.toPx() }
+        val marginPx = with(density) { 16.dp.toPx() }
         val gapPx = with(density) { 2.dp.toPx() }
         val radiusPx = with(density) { 24.dp.toPx() }
         val widthPx = with(density) { 236.dp.roundToPx() }

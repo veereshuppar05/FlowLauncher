@@ -49,6 +49,8 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
+private val GridPad = 16.dp
+
 // ======================= Root =======================
 @Composable
 fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur: (Int) -> Unit) {
@@ -138,6 +140,8 @@ private fun Modifier.homeGestures(vm: LauncherViewModel, onGesture: (Gesture) ->
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
         if (vm.editMode || vm.drag != null) return@awaitEachGesture
+        val edgeGuard = 14.dp.toPx()                       // curved-screen palm rejection
+        if (down.position.x < edgeGuard || down.position.x > size.width - edgeGuard) return@awaitEachGesture
         val onWidget = vm.widgetBounds.values.any { it.contains(down.position) }
         var multi = false
         var pan = Offset.Zero
@@ -182,7 +186,7 @@ private fun Modifier.homeGestures(vm: LauncherViewModel, onGesture: (Gesture) ->
 private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Gesture) -> Unit) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val padPx = with(density) { 12.dp.toPx() }
+    val padPx = with(density) { GridPad.toPx() }
     val edgePx = with(density) { 36.dp.toPx() }
     val pager = rememberPagerState { vm.layout.pages.size }
     val entry = remember { Animatable(1f) }
@@ -324,7 +328,7 @@ private fun PageGrid(
     val haptic = LocalHapticFeedback.current
     val widgets = LocalWidgets.current
     val anchor = LocalMenuAnchor.current
-    BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+    BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = GridPad)) {
         val cellW = maxWidth / s.cols
         val cellH = maxHeight / s.rows
         val density = LocalDensity.current
@@ -451,7 +455,7 @@ private fun DragGhost(vm: LauncherViewModel, d: DragState) {
     val s = vm.settings
     val g = vm.gridSize
     if (g.width <= 0f) return
-    val padPx = with(density) { 12.dp.toPx() }
+    val padPx = with(density) { GridPad.toPx() }
     val cwPx = (g.width - 2 * padPx) / s.cols
     val chPx = g.height / s.rows
     val w = with(density) { cwPx.toDp() }
@@ -496,7 +500,7 @@ private fun FlowClock(vm: LauncherViewModel, areaW: Dp, areaH: Dp, entry: Float)
     LaunchedEffect(Unit) {
         while (true) {
             now = LocalDateTime.now()
-            delay(1000L - System.currentTimeMillis() % 1000)
+            delay(60_000L - System.currentTimeMillis() % 60_000L)
         }
     }
     val c = vm.layout.clock
