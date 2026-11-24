@@ -196,10 +196,6 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
             vm.scrollTo = null
         }
     }
-    LaunchedEffect(vm.resumeTick) {
-        entry.snapTo(0f)
-        entry.animateTo(1f, tween(700, easing = LinearEasing))
-    }
     LaunchedEffect(pager.currentPage) { vm.currentPage = pager.currentPage }
 
     // Hold a dragged icon at the screen edge to flip pages
