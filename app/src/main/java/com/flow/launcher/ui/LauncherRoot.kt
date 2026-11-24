@@ -256,11 +256,23 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
 
     val hover: Pair<Int, Boolean>? = vm.drag?.let { target(it) }
 
+    /** Which gap in the dock the dragged app would land in (null = not over dock / not allowed). */
+    fun dockSlot(d: DragState): Int? {
+        if (dockBounds.width <= 0f || !dockBounds.contains(d.pointer)) return null
+        val fromDock = d.page == LauncherViewModel.DOCK_PAGE
+        if (!fromDock && (d.item !is HomeItem.App || d.group.isNotEmpty() || vm.layout.dock.size >= 5)) return null
+        val m = vm.layout.dock.size - if (fromDock) 1 else 0
+        val frac = (d.pointer.x - dockBounds.left) / dockBounds.width
+        return (frac * (m + 2) - 1f).roundToInt().coerceIn(0, m)
+    }
+
+    val dockHover: Int? = vm.drag?.takeIf { vm.menu == null }?.let { dockSlot(it) }
+
     val drop: () -> Unit = {
         val d = vm.drag
         if (d != null) {
             if (dockBounds.contains(d.pointer)) {
-                vm.endDrag(null, null, toDock = true)
+                vm.endDrag(null, null, toDock = true, dockIndex = dockSlot(d))
             } else {
                 val tg = target(d)
                 if (tg != null) vm.endDrag(pager.currentPage, tg.first, toDock = false, merge = tg.second)
@@ -305,7 +317,7 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
             }
         }
         PageDots(vm.layout.pages.size, pager.currentPage)
-        Dock(vm) { dockBounds = it }
+        Dock(vm, dockHover, drop) { dockBounds = it }
         AnimatedVisibility(vm.editMode) {
             if (vm.selected.isEmpty()) EditBar(vm) else SelectionBar(vm)
         }
@@ -608,23 +620,76 @@ private fun PageDots(count: Int, current: Int) {
 }
 
 @Composable
-private fun Dock(vm: LauncherViewModel, onBounds: (Rect) -> Unit) {
-    val apps = vm.layout.dock.mapNotNull { vm.appMap[it] }
-    if (apps.isEmpty() && vm.drag == null) return
+private fun Dock(vm: LauncherViewModel, insertAt: Int?, onDrop: () -> Unit, onBounds: (Rect) -> Unit) {
+    val d = vm.drag
+    val keys = vm.layout.dock
+    if (keys.isEmpty() && d == null) return
+    // Hide the dock icon that is being dragged (once the menu has closed)
+    val draggingIndex = if (d != null && d.page == LauncherViewModel.DOCK_PAGE && vm.menu == null) d.index else -1
+    val iconSize = (54 * vm.settings.iconScale).dp
     Row(
         Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth()
             .heightIn(min = 78.dp)
             .onGloballyPositioned { onBounds(it.boundsInRoot()) }
-            .glass(RoundedCornerShape(30.dp), if (vm.drag != null) 0.22f else 0.12f)
+            .glass(RoundedCornerShape(30.dp), if (d != null) 0.22f else 0.12f)
             .padding(vertical = 12.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        apps.forEachIndexed { i, app ->
-            AppIcon(
-                app, (54 * vm.settings.iconScale).dp, showLabel = false,
-                onLongClick = { vm.menu = MenuTarget.DockApp(i, app) },
-            ) { vm.launch(app) }
+        var shown = 0
+        keys.forEachIndexed { i, k ->
+            if (i == draggingIndex) return@forEachIndexed
+            if (insertAt == shown) Spacer(Modifier.size(iconSize))      // the gap where the app will land
+            shown++
+            val app = vm.appMap[k] ?: return@forEachIndexed
+            key(k) { DockIcon(vm, i, app, iconSize, onDrop) }
+        }
+        if (insertAt != null && insertAt >= shown) Spacer(Modifier.size(iconSize))
+    }
+}
+
+@Composable
+private fun DockIcon(vm: LauncherViewModel, index: Int, app: AppInfo, iconSize: Dp, onDrop: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val anchor = LocalMenuAnchor.current
+    val bounds = remember { arrayOf(Rect.Zero) }
+    val pad = with(LocalDensity.current) { 12.dp.toPx() }
+    Box(
+        Modifier
+            .onGloballyPositioned { bounds[0] = it.boundsInRoot() }
+            .pointerInput(index, app.key) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { off ->
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        vm.suppressClick = true
+                        val b = bounds[0]
+                        val s = vm.settings
+                        val cw = (vm.gridSize.width - 2 * pad) / s.cols
+                        val ch = vm.gridSize.height / s.rows
+                        // keep the dragged icon centred under the finger
+                        val grab = Offset(cw / 2f, ch / 2f) + off - Offset(b.width / 2f, b.height / 2f)
+                        vm.startDockDrag(index, app.key, b.topLeft + off, grab)
+                        anchor.rect = b
+                        vm.menu = MenuTarget.DockApp(index, app)
+                    },
+                    onDrag = { change, amount ->
+                        change.consume()
+                        vm.dragBy(amount)
+                    },
+                    onDragEnd = {
+                        val dd = vm.drag
+                        if (dd != null && (dd.pointer - dd.start).getDistance() < 24f) vm.cancelDrag() else onDrop()
+                        vm.suppressClick = false
+                    },
+                    onDragCancel = {
+                        vm.cancelDrag()
+                        vm.suppressClick = false
+                    },
+                )
+            },
+    ) {
+        AppIcon(app, iconSize, showLabel = false) {
+            if (vm.suppressClick) vm.suppressClick = false else vm.launch(app)
         }
     }
 }

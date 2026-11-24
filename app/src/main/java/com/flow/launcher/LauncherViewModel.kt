@@ -306,10 +306,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         layout = layout.copy(pages = layout.pages + listOf(emptyPage()))
     }
 
-    fun endDrag(targetPage: Int?, targetIndex: Int?, toDock: Boolean, merge: Boolean = false) {
+    fun endDrag(targetPage: Int?, targetIndex: Int?, toDock: Boolean, merge: Boolean = false, dockIndex: Int? = null) {
         val d = drag ?: return
         drag = null
         if (d.group.isNotEmpty()) { moveGroup(d, targetPage, targetIndex, toDock); return }
+        if (d.page == DOCK_PAGE) { endDockDrag(d, targetPage, targetIndex, toDock, dockIndex, merge); return }
 
         if (toDock) {
             val item = d.item
@@ -317,7 +318,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 item !is HomeItem.App -> toast("Folders can't go in the dock")
                 layout.dock.size >= 5 -> toast("Dock is full")
                 else -> {
-                    layout = layout.copy(dock = layout.dock + (item as HomeItem.App).key)
+                    val list = layout.dock.toMutableList()
+                    list.add((dockIndex ?: list.size).coerceIn(0, list.size), (item as HomeItem.App).key)
+                    layout = layout.copy(dock = list)
                     editPages { it[d.page][d.index] = null }
                     return
                 }
@@ -355,6 +358,74 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             // Otherwise → move apps aside
             moveWithShift(p, d.page, d.index, targetPage, targetIndex)
         }
+    }
+
+    fun startDockDrag(index: Int, key: String, pointer: Offset, grab: Offset) {
+        drag = DragState(DOCK_PAGE, index, HomeItem.App(key), pointer, pointer, grab)
+        menu = null
+    }
+
+    private fun endDockDrag(
+        d: DragState,
+        targetPage: Int?,
+        targetIndex: Int?,
+        toDock: Boolean,
+        dockIndex: Int?,
+        merge: Boolean,
+    ) {
+        val key = (d.item as? HomeItem.App)?.key ?: return
+
+        // Reorder inside the dock
+        if (toDock) {
+            val dock = layout.dock.toMutableList()
+            if (d.index !in dock.indices) return
+            dock.removeAt(d.index)
+            dock.add((dockIndex ?: dock.size).coerceIn(0, dock.size), key)
+            layout = layout.copy(dock = dock)
+            saveLayout()
+            return
+        }
+
+        // Dock → home screen
+        if (targetPage == null || targetIndex == null || layout.widgets.any { it.covers(targetPage, targetIndex) }) return
+        layout = layout.copy(dock = layout.dock.filterIndexed { i, _ -> i != d.index })
+        editPages { p ->
+            while (p.size <= targetPage) p += emptyPage()
+            val dst = p[targetPage][targetIndex]
+            if (merge && dst != null) {
+                p[targetPage][targetIndex] = when (dst) {
+                    is HomeItem.App -> listOf(dst.key, key).let { HomeItem.Folder(newId(), autoName(it), it) }
+                    is HomeItem.Folder -> dst.copy(apps = dst.apps + key)
+                }
+            } else {
+                insertWithShift(p, targetPage, targetIndex, HomeItem.App(key))
+            }
+        }
+    }
+
+    /** Inserts a new item at a cell, pushing the others forward (overflow goes to the next page). */
+    private fun insertWithShift(p: Pages, toPage: Int, toIndex: Int, item: HomeItem) {
+        val page = p[toPage]
+        val clock = layout.clock.visible
+        val cells = (0 until slotCount).filter { i ->
+            !layout.widgets.any { it.covers(toPage, i) } &&
+                (!(toPage == 0 && clock && i < settings.cols * 2) || i == toIndex)
+        }
+        val t = cells.indexOf(toIndex)
+        if (t < 0) {
+            place(p, item)
+            return
+        }
+        var carry: HomeItem? = item
+        var k = t
+        while (carry != null && k < cells.size) {
+            val idx = cells[k]
+            val previous = page[idx]
+            page[idx] = carry
+            carry = previous
+            k++
+        }
+        if (carry != null) overflowToNextPage(p, toPage, carry)
     }
 
     /** Puts the item at the target cell and shifts the others along to make room. */
@@ -872,4 +943,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     private fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+
+    companion object {
+        const val DOCK_PAGE = -1
+    }
 }
