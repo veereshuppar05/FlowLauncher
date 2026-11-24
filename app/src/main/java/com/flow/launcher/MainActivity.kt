@@ -43,6 +43,11 @@ class MainActivity : ComponentActivity() {
         vm.onResume()
     }
 
+    override fun onPause() {
+        super.onPause()
+        vm.dismissTransient()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val alreadyHome = hasWindowFocus() &&

@@ -739,6 +739,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         selected = emptySet()
     }
 
+    /** Close short-lived UI (long-press menu, drag) when the launcher leaves the screen. */
+    fun dismissTransient() {
+        menu = null
+        suppressClick = false
+        if (drag != null) cancelDrag()
+    }
+
     fun onResume() {
         resumeTick++
         suggestions = repo.suggestions(visibleApps)
