@@ -707,12 +707,19 @@ private fun Dock(
     ) {
         var shown = 0
         keys.forEachIndexed { i, k ->
-            if (i == draggingIndex) return@forEachIndexed
-            DockGap(insertAt == shown, iconSize)
-            shown++
+            val isDragged = i == draggingIndex
+            if (!isDragged) {
+                DockGap(insertAt == shown, iconSize)
+                shown++
+            }
             val app = vm.appMap[k] ?: return@forEachIndexed
             key(k) {
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Box(
+                    // The dragged icon stays alive (invisible, zero width) so the drag isn't cancelled
+                    if (isDragged) Modifier.width(0.dp).graphicsLayer { alpha = 0f }
+                    else Modifier.weight(1f),
+                    contentAlignment = Alignment.Center,
+                ) {
                     DockIcon(vm, i, app, iconSize, onDrop)
                 }
             }
