@@ -367,6 +367,16 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         menu = null
     }
 
+    /** Reorder within the dock: take the app at [from] and put it at [to]. */
+    fun moveDockApp(from: Int, to: Int) {
+        val list = layout.dock.toMutableList()
+        if (from !in list.indices) return
+        val k = list.removeAt(from)
+        list.add(to.coerceIn(0, list.size), k)
+        layout = layout.copy(dock = list)
+        saveLayout()
+    }
+
     private fun endDockDrag(
         d: DragState,
         targetPage: Int?,

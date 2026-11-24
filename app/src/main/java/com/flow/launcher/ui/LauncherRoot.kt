@@ -35,6 +35,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.*
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -688,6 +689,13 @@ private fun PageDots(count: Int, current: Int) {
 }
 
 // ======================= Dock =======================
+/** State of a drag that is happening inside the dock. */
+private class DockLocalDrag(val from: Int) {
+    var dx by mutableFloatStateOf(0f)
+    var dy by mutableFloatStateOf(0f)
+    var global by mutableStateOf(false)     // true once pulled up out of the dock
+}
+
 @Composable
 private fun Dock(
     vm: LauncherViewModel,
@@ -698,37 +706,91 @@ private fun Dock(
 ) {
     val keys = vm.layout.dock
     if (keys.isEmpty() && dragInfo == null) return
-    val draggingIndex =
-        if (dragInfo != null && dragInfo.page == LauncherViewModel.DOCK_PAGE && !dragInfo.menuOpen) dragInfo.index else -1
     val iconSize = rememberIconSize(vm)
+    val density = LocalDensity.current
+    val liftPx = with(density) { 60.dp.toPx() }
+
+    var local by remember { mutableStateOf<DockLocalDrag?>(null) }
+    var rowWidth by remember { mutableFloatStateOf(0f) }
+    val n = keys.size
+    val slotW = if (n > 0 && rowWidth > 0f) rowWidth / n else 1f
+
+    // Which slot the held dock app is over (changes only when it crosses into another slot)
+    val localTarget by remember(n, slotW) {
+        derivedStateOf {
+            local?.takeIf { !it.global }?.let { d ->
+                (d.from + (d.dx / slotW).roundToInt()).coerceIn(0, (n - 1).coerceAtLeast(0))
+            }
+        }
+    }
+    // Gap for apps dragged IN from the home screen / folders
+    val external = insertAt != null && local == null && dragInfo?.page != LauncherViewModel.DOCK_PAGE
+
     Row(
         Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth()
             .heightIn(min = 78.dp)
             .onGloballyPositioned { onBounds(it.boundsInRoot()) }
-            .glass(RoundedCornerShape(30.dp), if (dragInfo != null) 0.22f else 0.12f)
+            .glass(RoundedCornerShape(30.dp), if (dragInfo != null || local != null) 0.22f else 0.12f)
             .padding(vertical = 12.dp, horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        var shown = 0
-        keys.forEachIndexed { i, k ->
-            val isDragged = i == draggingIndex
-            if (!isDragged) {
-                DockGap(insertAt == shown, iconSize)
-                shown++
-            }
-            val app = vm.appMap[k] ?: return@forEachIndexed
-            key(k) {
-                Box(
-                    // The dragged icon stays alive (invisible, zero width) so the drag isn't cancelled
-                    if (isDragged) Modifier.width(0.dp).graphicsLayer { alpha = 0f }
-                    else Modifier.weight(1f),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    DockIcon(vm, i, app, iconSize, onDrop)
+        Row(
+            Modifier.fillMaxWidth().onSizeChanged { rowWidth = it.width.toFloat() },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            keys.forEachIndexed { i, k ->
+                DockGap(external && insertAt == i, iconSize)
+                key(k) {
+                    val from = local?.from ?: -1
+                    val t = localTarget
+                    val goal = when {
+                        t == null || i == from -> 0f
+                        t > from && i in (from + 1)..t -> -slotW      // slide left
+                        t < from && i in t until from -> slotW        // slide right
+                        else -> 0f
+                    }
+                    val shift by animateFloatAsState(
+                        goal, spring(dampingRatio = 0.85f, stiffness = 500f), label = "dockShift",
+                    )
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .zIndex(if (i == from) 1f else 0f)
+                            .graphicsLayer {
+                                val d = local
+                                if (d != null && d.from == i) {
+                                    if (d.global) {
+                                        alpha = 0f
+                                    } else {
+                                        translationX = d.dx
+                                        translationY = d.dy
+                                        scaleX = 1.12f; scaleY = 1.12f
+                                    }
+                                } else {
+                                    translationX = if (d == null) 0f else shift
+                                }
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        vm.appMap[k]?.let { app ->
+                            DockIcon(
+                                vm = vm,
+                                index = i,
+                                app = app,
+                                iconSize = iconSize,
+                                liftPx = liftPx,
+                                onDrop = onDrop,
+                                onStart = { local = DockLocalDrag(i) },
+                                getLocal = { local },
+                                onFinish = { local = null },
+                                target = { localTarget },
+                            )
+                        }
+                    }
                 }
             }
+            DockGap(external && insertAt != null && insertAt >= n, iconSize)
         }
-        DockGap(insertAt != null && insertAt >= shown, iconSize)
     }
 }
 
@@ -744,38 +806,74 @@ private fun DockGap(open: Boolean, iconSize: Dp) {
 }
 
 @Composable
-private fun DockIcon(vm: LauncherViewModel, index: Int, app: AppInfo, iconSize: Dp, onDrop: () -> Unit) {
+private fun DockIcon(
+    vm: LauncherViewModel,
+    index: Int,
+    app: AppInfo,
+    iconSize: Dp,
+    liftPx: Float,
+    onDrop: () -> Unit,
+    onStart: () -> Unit,
+    getLocal: () -> DockLocalDrag?,
+    onFinish: () -> Unit,
+    target: () -> Int?,
+) {
     val haptic = LocalHapticFeedback.current
     val anchor = LocalMenuAnchor.current
     val bounds = remember { arrayOf(Rect.Zero) }
     Box(
         Modifier
-            .onGloballyPositioned { bounds[0] = it.boundsInRoot() }
+            .onGloballyPositioned { if (getLocal() == null) bounds[0] = it.boundsInRoot() }
             .pointerInput(index, app.key) {
+                var startOff = Offset.Zero
+                var startBounds = Rect.Zero
                 detectDragGesturesAfterLongPress(
                     onDragStart = { off ->
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         vm.suppressClick = true
-                        val b = bounds[0]
-                        val s = vm.settings
-                        val pad = GridPad.toPx()
-                        val cw = (vm.gridSize.width - 2 * pad) / s.cols
-                        val ch = vm.gridSize.height / s.rows
-                        val grab = Offset(cw / 2f, ch / 2f) + off - Offset(b.width / 2f, b.height / 2f)
-                        vm.startDockDrag(index, app.key, b.topLeft + off, grab)
-                        anchor.rect = b
+                        startOff = off
+                        startBounds = bounds[0]
+                        onStart()
+                        anchor.rect = startBounds
                         vm.menu = MenuTarget.DockApp(index, app)
                     },
                     onDrag = { change, amount ->
                         change.consume()
-                        vm.dragBy(amount)
+                        val d = getLocal()
+                        if (d != null) {
+                            d.dx += amount.x
+                            d.dy += amount.y
+                            if (vm.menu != null && Offset(d.dx, d.dy).getDistance() > 24f) vm.menu = null
+                            if (!d.global && d.dy < -liftPx) {
+                                // Pulled up out of the dock → continue as a normal drag onto the home screen
+                                d.global = true
+                                val s = vm.settings
+                                val pad = GridPad.toPx()
+                                val cw = (vm.gridSize.width - 2 * pad) / s.cols
+                                val ch = vm.gridSize.height / s.rows
+                                val grab = Offset(cw / 2f, ch / 2f) + startOff -
+                                    Offset(startBounds.width / 2f, startBounds.height / 2f)
+                                val pointer = startBounds.topLeft + startOff + Offset(d.dx, d.dy)
+                                vm.startDockDrag(index, app.key, pointer, grab)
+                            } else if (d.global) {
+                                vm.dragBy(amount)
+                            }
+                        }
                     },
                     onDragEnd = {
-                        val dd = vm.drag
-                        if (dd != null && (dd.pointer - dd.start).getDistance() < 24f) vm.cancelDrag() else onDrop()
+                        val d = getLocal()
+                        val t = target()                 // read before clearing the drag
+                        onFinish()
+                        when {
+                            d == null -> {}
+                            d.global -> vm.dropHandler?.invoke() ?: vm.cancelDrag()
+                            Offset(d.dx, d.dy).getDistance() < 24f -> {}   // just a long-press: keep menu
+                            t != null && t != index -> vm.moveDockApp(index, t)
+                        }
                         vm.suppressClick = false
                     },
                     onDragCancel = {
+                        onFinish()
                         vm.cancelDrag()
                         vm.suppressClick = false
                     },
