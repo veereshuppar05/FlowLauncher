@@ -58,6 +58,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             val base = if (loaded) layout else repo.loadLayout()
             layout = if (base == null) defaultLayout() else reconcile(base)
             loaded = true
+            if (!settings.drawerMode) ensureAllOnHome()
             saveLayout()
             suggestions = repo.suggestions(visibleApps)
         }
@@ -319,7 +320,22 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             layout = layout.copy(pages = flow(layout.pages.flatten().filterNotNull(), layout.clock.visible))
             saveLayout()
         }
+        if (!s.drawerMode) ensureAllOnHome()
         suggestions = repo.suggestions(visibleApps)
+    }
+
+    /** Standard mode: every visible app must be somewhere on the home screen or dock. */
+    private fun ensureAllOnHome() {
+        val onHome = layout.pages.flatten().flatMap {
+            when (it) {
+                is HomeItem.App -> listOf(it.key)
+                is HomeItem.Folder -> it.apps
+                null -> emptyList()
+            }
+        }.toSet() + layout.dock
+        val missing = visibleApps.filter { it.key !in onHome }
+        if (missing.isEmpty()) return
+        editPages { p -> missing.forEach { place(p, HomeItem.App(it.key), layout.clock.visible) } }
     }
 
     fun organizeByCategory() {
