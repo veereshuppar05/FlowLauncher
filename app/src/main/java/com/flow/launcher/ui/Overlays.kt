@@ -166,7 +166,9 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                     is MenuTarget.HomeApp -> {
                         MenuRow("Add to dock") { vm.addToDock(t.page, t.index, t.app.key) }
                         MenuRow("Move to next page") { vm.moveToNextPage(t.page, t.index) }
-                        MenuRow("Remove from home screen") { vm.removeFromHome(t.page, t.index) }
+                        if (vm.settings.drawerMode) {
+                            MenuRow("Remove from home screen") { vm.removeFromHome(t.page, t.index) }
+                        }
                         MenuRow("Hide app") { vm.hide(t.app.key) }
                         MenuRow("App info") { vm.appInfo(t.app) }
                         MenuRow("Uninstall", danger = true) { vm.uninstall(t.app) }
@@ -175,7 +177,9 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                         MenuRow("Open and rename") { vm.menu = null; vm.openFolderId = t.folder.id }
                         MenuRow("Move to next page") { vm.moveToNextPage(t.page, t.index) }
                         MenuRow("Ungroup folder") { vm.ungroup(t.page, t.index) }
-                        MenuRow("Remove from home screen") { vm.removeFromHome(t.page, t.index) }
+                        if (vm.settings.drawerMode) {
+                            MenuRow("Remove from home screen") { vm.removeFromHome(t.page, t.index) }
+                        }
                     }
                     is MenuTarget.DockApp -> {
                         MenuRow("Move to home screen") { vm.removeFromDock(t.index) }
@@ -183,7 +187,9 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                         MenuRow("Uninstall", danger = true) { vm.uninstall(t.app) }
                     }
                     is MenuTarget.DrawerApp -> {
-                        MenuRow("Add to home screen") { vm.addToHome(t.app.key) }
+                        if (vm.settings.drawerMode) {
+                            MenuRow("Add to home screen") { vm.addToHome(t.app.key) }
+                        }
                         MenuRow("Hide app") { vm.hide(t.app.key) }
                         MenuRow("App info") { vm.appInfo(t.app) }
                         MenuRow("Uninstall", danger = true) { vm.uninstall(t.app) }
@@ -231,6 +237,17 @@ fun SettingsPanel(vm: LauncherViewModel) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Text("Home screen", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+
+            Text("Home screen mode", color = Color.White, fontSize = 15.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                GlassPill("Drawer", Modifier.weight(1f), selected = s.drawerMode) {
+                    vm.updateSettings(s.copy(drawerMode = true))
+                }
+                GlassPill("Standard", Modifier.weight(1f), selected = !s.drawerMode) {
+                    vm.updateSettings(s.copy(drawerMode = false))
+                }
+            }
+
 
             Choice("Columns", listOf(4, 5), s.cols) { vm.updateSettings(s.copy(cols = it)) }
             Choice("Rows", listOf(5, 6, 7), s.rows) { vm.updateSettings(s.copy(rows = it)) }
