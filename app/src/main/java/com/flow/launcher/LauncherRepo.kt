@@ -26,9 +26,6 @@ class LauncherRepo(private val ctx: Context) {
     private val settingsPrefs = ctx.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private var callback: LauncherApps.Callback? = null
 
-    /** Icon bitmap size matched to the screen (≈210 px on Edge 50 Fusion). */
-    private val iconPx = (ctx.resources.displayMetrics.density * 80).toInt().coerceIn(144, 256)
-
     fun loadApps(iconPack: String?): List<AppInfo> {
         val pack = iconPack?.let { IconPacks.load(ctx, it) }
         val me = Process.myUserHandle()
@@ -48,7 +45,7 @@ class LauncherRepo(private val ctx: Context) {
                     packageName = info.componentName.packageName,
                     component = info.componentName,
                     user = user,
-                    icon = drawable.toBitmap(iconPx, iconPx).asImageBitmap(),
+                    icon = drawable.toBitmap(144, 144).asImageBitmap(),
                     category = category,
                 )
             }
@@ -155,7 +152,6 @@ class LauncherRepo(private val ctx: Context) {
             iconShape = IconShape.entries.firstOrNull { it.name == getString("shape", null) } ?: IconShape.SQUIRCLE,
             badges = getBoolean("badges", true),
             lockPrivate = getBoolean("lockPrivate", true),
-            highRefresh = getBoolean("hz", true),
             gestures = Gesture.entries.associateWith { g ->
                 val saved = getString("g_${g.name}", null)
                 GestureAction.entries.firstOrNull { it.name == saved } ?: g.default
@@ -170,7 +166,6 @@ class LauncherRepo(private val ctx: Context) {
             .putStringSet("hidden", s.hidden).putBoolean("drawer", s.drawerMode)
             .putString("pack", s.iconPack).putString("shape", s.iconShape.name)
             .putBoolean("badges", s.badges).putBoolean("lockPrivate", s.lockPrivate)
-            .putBoolean("hz", s.highRefresh)
         s.gestures.forEach { (g, a) -> e.putString("g_${g.name}", a.name) }
         if (sync) e.commit() else e.apply()
     }

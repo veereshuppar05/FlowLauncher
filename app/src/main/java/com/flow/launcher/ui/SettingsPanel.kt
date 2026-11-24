@@ -86,7 +86,6 @@ fun SettingsPanel(vm: LauncherViewModel) {
                 Hint("Install any Nova-compatible icon pack from the Play Store and it will show up here.")
             }
             Toggle("Frosted glass blur", s.blur) { vm.updateSettings(s.copy(blur = it)) }
-            Toggle("Smooth 144 Hz on home screen", s.highRefresh) { vm.updateSettings(s.copy(highRefresh = it)) }
 
             // ----- Badges -----
             Section("Notification dots")

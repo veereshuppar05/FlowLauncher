@@ -85,7 +85,6 @@ data class LauncherSettings(
     val iconShape: IconShape = IconShape.SQUIRCLE,
     val badges: Boolean = true,
     val lockPrivate: Boolean = true,
-    val highRefresh: Boolean = true,
     val gestures: Map<Gesture, GestureAction> = Gesture.entries.associateWith { it.default },
 )
 
