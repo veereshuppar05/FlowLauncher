@@ -354,9 +354,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        val dropPage = targetPage
-        val dropIndex = targetIndex
-        if (dropPage == null || dropIndex == null) {
+        val dropPage = targetPage ?: run {
+            editPages { }
+            return
+        }
+        val dropIndex = targetIndex ?: run {
             editPages { }
             return
         }
