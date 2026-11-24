@@ -265,7 +265,7 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
                             if (vm.drag == null && vm.menu == null) vm.editMode = true
                         }
                     },
-                    onTap = { if (vm.editMode) vm.editMode = false },
+                    onTap = { if (vm.editMode) vm.exitEditMode() },
                 )
             }
             .systemBarsPadding(),
@@ -287,7 +287,9 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
         }
         PageDots(vm.layout.pages.size, pager.currentPage)
         Dock(vm) { dockBounds = it }
-        AnimatedVisibility(vm.editMode) { EditBar(vm) }
+        AnimatedVisibility(vm.editMode) {
+            if (vm.selected.isEmpty()) EditBar(vm) else SelectionBar(vm)
+        }
     }
 }
 
@@ -408,21 +410,30 @@ private fun PageGrid(
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                when (item) {
-                    is HomeItem.App -> vm.appMap[item.key]?.let { app ->
-                        AppIcon(app, iconSize, s.showLabels) {
+                Box {
+                    when (item) {
+                        is HomeItem.App -> vm.appMap[item.key]?.let { app ->
+                            AppIcon(app, iconSize, s.showLabels) {
+                                when {
+                                    vm.suppressClick -> vm.suppressClick = false
+                                    vm.editMode -> vm.toggleSelect(item)
+                                    else -> vm.launch(app)
+                                }
+                            }
+                        }
+                        is HomeItem.Folder -> FolderIcon(item, vm.appMap, iconSize, s.showLabels) {
                             when {
                                 vm.suppressClick -> vm.suppressClick = false
-                                vm.editMode -> vm.editMode = false
-                                else -> vm.launch(app)
+                                vm.editMode -> vm.toggleSelect(item)
+                                else -> vm.openFolderId = item.id
                             }
                         }
                     }
-                    is HomeItem.Folder -> FolderIcon(item, vm.appMap, iconSize, s.showLabels) {
-                        when {
-                            vm.suppressClick -> vm.suppressClick = false
-                            else -> vm.openFolderId = item.id
-                        }
+                    if (vm.editMode && !isDragged) {
+                        SelectBadge(
+                            vm.isSelected(item),
+                            Modifier.align(Alignment.TopCenter).offset(x = -(iconSize / 2), y = (-4).dp),
+                        )
                     }
                 }
             }
@@ -578,6 +589,61 @@ private fun EditBar(vm: LauncherViewModel) {
         }
         GlassPill("Widgets", Modifier.weight(1f)) { vm.widgetPickerOpen = true }
         GlassPill("Settings", Modifier.weight(1f)) { vm.showSettings = true }
-        GlassPill("Done", Modifier.weight(1f), selected = true) { vm.editMode = false }
+        GlassPill("Done", Modifier.weight(1f), selected = true) { vm.exitEditMode() }
+    }
+}
+
+@Composable
+private fun SelectBadge(selected: Boolean, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .background(if (selected) Color(0xFF2F80ED) else Color.Black.copy(alpha = 0.25f))
+            .border(1.5.dp, Color.White, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) Text("✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun SelectionBar(vm: LauncherViewModel) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+        Text(
+            "${vm.selected.size} selected",
+            style = LabelStyle.copy(fontSize = 13.sp),
+            modifier = Modifier.padding(start = 6.dp, bottom = 6.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            SelPill("Group", Modifier.weight(1f)) { vm.groupSelected() }
+            SelPill("Hide", Modifier.weight(1f)) { vm.hideSelected() }
+            SelPill("Uninstall", Modifier.weight(1f), danger = true) { vm.uninstallSelected() }
+            if (vm.settings.drawerMode) SelPill("Remove", Modifier.weight(1f)) { vm.removeSelected() }
+            SelPill("Done", Modifier.weight(1f), highlight = true) { vm.exitEditMode() }
+        }
+    }
+}
+
+@Composable
+private fun SelPill(
+    text: String,
+    modifier: Modifier = Modifier,
+    danger: Boolean = false,
+    highlight: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier
+            .glass(RoundedCornerShape(50), if (highlight) 0.40f else 0.16f)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 6.dp, vertical = 11.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            color = if (danger) Color(0xFFFF8A8A) else Color.White,
+            fontSize = 13.sp, maxLines = 1,
+        )
     }
 }

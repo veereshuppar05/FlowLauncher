@@ -165,6 +165,7 @@ private object MenuIcons {
     val Apps by lazy { icon("M4,8h4V4H4v4zM10,20h4v-4h-4v4zM4,20h4v-4H4v4zM4,14h4v-4H4v4zM10,14h4v-4h-4v4zM16,4v4h4V4h-4zM10,8h4V4h-4v4zM16,14h4v-4h-4v4zM16,20h4v-4h-4v4z") }
     val Grow by lazy { icon("M21,11V3h-8l3.29,3.29 -10,10L3,13v8h8l-3.29,-3.29 10,-10z") }
     val Shrink by lazy { icon("M22,3.41l-5.29,5.29L20,12h-8V4l3.29,3.29L20.59,2 22,3.41zM3.41,22l5.29,-5.29L12,20v-8H4l3.29,3.29L2,20.59 3.41,22z") }
+    val Check by lazy { icon("M9,16.17L4.83,12l-1.42,1.41L9,19 21,7l-1.41,-1.41z") }
 }
 
 private class MenuAction(
@@ -206,6 +207,7 @@ private fun buildActions(
 
     return when (t) {
         is MenuTarget.HomeApp -> listOf(timer(t.app), info(t.app), lock(t.app), uninstall(t.app)) to buildList {
+            add(MenuAction(MenuIcons.Check, "Select multiple") { vm.startSelection(HomeItem.App(t.app.key)) })
             if (drawerMode) add(MenuAction(MenuIcons.Close, "Remove from home") { vm.removeFromHome(t.page, t.index) })
         }
         is MenuTarget.DockApp -> listOf(timer(t.app), info(t.app), uninstall(t.app)) to listOf(
@@ -226,7 +228,9 @@ private fun buildActions(
             add(MenuAction(MenuIcons.Edit, "Rename") { vm.menu = null; vm.openFolderId = t.folder.id })
             add(MenuAction(MenuIcons.Apps, "Ungroup") { vm.ungroup(t.page, t.index) })
             if (drawerMode) add(MenuAction(MenuIcons.Close, "Remove") { vm.removeFromHome(t.page, t.index) })
-        } to emptyList()
+        } to listOf(
+            MenuAction(MenuIcons.Check, "Select multiple") { vm.startSelection(t.folder) },
+        )
         is MenuTarget.HomeWidget -> {
             val id = t.widget.appWidgetId
             listOf(

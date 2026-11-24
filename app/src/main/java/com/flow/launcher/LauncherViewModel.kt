@@ -48,6 +48,8 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     var currentPage = 0
     var suppressClick = false
+    var selected by mutableStateOf<Set<String>>(emptySet())
+    private val uninstallQueue = ArrayDeque<AppInfo>()
     val widgetBounds = HashMap<Int, Rect>()
 
     val visibleApps: List<AppInfo> get() = apps.filter { it.key !in settings.hidden }
@@ -456,17 +458,26 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     /** Move to private space. */
-    fun hide(key: String) {
-        updateSettings(settings.copy(hidden = settings.hidden + key))
-        layout = layout.copy(dock = layout.dock - key)
+    fun hide(key: String) = hideAll(listOf(key))
+
+    fun hideAll(keys: Collection<String>) {
+        val set = keys.toSet()
+        if (set.isEmpty()) return
+        updateSettings(settings.copy(hidden = settings.hidden + set))
+        layout = layout.copy(dock = layout.dock - set)
         editPages { p ->
             p.forEach { page ->
                 page.indices.forEach { i ->
                     when (val item = page[i]) {
-                        is HomeItem.App -> if (item.key == key) page[i] = null
-                        is HomeItem.Folder -> if (key in item.apps) {
-                            val r = item.apps - key
-                            page[i] = if (r.size == 1) HomeItem.App(r[0]) else item.copy(apps = r)
+                        is HomeItem.App -> if (item.key in set) page[i] = null
+                        is HomeItem.Folder -> {
+                            val r = item.apps - set
+                            page[i] = when (r.size) {
+                                item.apps.size -> item
+                                0 -> null
+                                1 -> HomeItem.App(r[0])
+                                else -> item.copy(apps = r)
+                            }
                         }
                         null -> {}
                     }
@@ -474,7 +485,96 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             }
         }
         menu = null
-        toast("Moved to private space")
+        toast(if (set.size == 1) "Moved to private space" else "${set.size} apps moved to private space")
+    }
+
+    // =============== multi-select ===============
+    private fun HomeItem.selKey(): String = when (this) {
+        is HomeItem.App -> key
+        is HomeItem.Folder -> id
+    }
+
+    fun isSelected(item: HomeItem) = item.selKey() in selected
+
+    fun toggleSelect(item: HomeItem) {
+        val k = item.selKey()
+        selected = if (k in selected) selected - k else selected + k
+    }
+
+    fun startSelection(item: HomeItem) {
+        menu = null
+        editMode = true
+        selected = setOf(item.selKey())
+    }
+
+    fun exitEditMode() {
+        editMode = false
+        selected = emptySet()
+    }
+
+    private fun selectedAppKeys(): List<String> =
+        layout.pages.flatten().filterNotNull()
+            .filter { it.selKey() in selected }
+            .flatMap {
+                when (it) {
+                    is HomeItem.App -> listOf(it.key)
+                    is HomeItem.Folder -> it.apps
+                }
+            }
+            .distinct()
+
+    fun groupSelected() {
+        val keys = selectedAppKeys()
+        if (keys.size < 2) {
+            toast("Select at least 2 apps")
+            return
+        }
+        editPages { p ->
+            var first: Pair<Int, Int>? = null
+            p.forEachIndexed { pi, page ->
+                page.indices.forEach { i ->
+                    val item = page[i]
+                    if (item != null && item.selKey() in selected) {
+                        if (first == null) first = pi to i
+                        page[i] = null
+                    }
+                }
+            }
+            val (pg, idx) = first ?: return@editPages
+            p[pg][idx] = HomeItem.Folder(newId(), autoName(keys), keys)
+        }
+        exitEditMode()
+    }
+
+    fun hideSelected() {
+        val keys = selectedAppKeys()
+        exitEditMode()
+        hideAll(keys)
+    }
+
+    fun removeSelected() {
+        editPages { p ->
+            p.forEach { page ->
+                page.indices.forEach { i ->
+                    val item = page[i]
+                    if (item != null && item.selKey() in selected) page[i] = null
+                }
+            }
+        }
+        exitEditMode()
+    }
+
+    fun uninstallSelected() {
+        val list = selectedAppKeys().mapNotNull { appMap[it] }.distinctBy { it.packageName }
+        exitEditMode()
+        uninstallQueue.clear()
+        uninstallQueue.addAll(list)
+        uninstallNext()
+    }
+
+    private fun uninstallNext() {
+        val next = uninstallQueue.removeFirstOrNull() ?: return
+        uninstall(next)
     }
 
     /** Move out of private space. */
@@ -571,11 +671,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     fun closeAll() {
         drawerOpen = false; openFolderId = null; menu = null; showSettings = false
         editMode = false; widgetPickerOpen = false; privateOpen = false
+        selected = emptySet()
     }
 
     fun onResume() {
         resumeTick++
         suggestions = repo.suggestions(visibleApps)
+        if (uninstallQueue.isNotEmpty()) uninstallNext()   // next app in a multi-uninstall
     }
 
     fun onBack() {
@@ -586,6 +688,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             showSettings -> showSettings = false
             openFolderId != null -> openFolderId = null
             drawerOpen -> drawerOpen = false
+            selected.isNotEmpty() -> selected = emptySet()
             editMode -> editMode = false
         }
     }
