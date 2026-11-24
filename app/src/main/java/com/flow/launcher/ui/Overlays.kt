@@ -5,6 +5,8 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -19,6 +21,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -34,6 +37,35 @@ import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.flow.launcher.*
 import kotlin.math.roundToInt
+
+private data class MenuColors(
+    val bg: Color,
+    val text: Color,
+    val sub: Color,
+    val divider: Color,
+    val danger: Color,
+    val border: Color,
+)
+
+private val DarkMenu = MenuColors(
+    bg = Color(0xF22B2B2F),
+    text = Color.White,
+    sub = Color.White.copy(alpha = 0.6f),
+    divider = Color.White.copy(alpha = 0.12f),
+    danger = Color(0xFFFF6B6B),
+    border = Color.White.copy(alpha = 0.08f),
+)
+
+private val LightMenu = MenuColors(
+    bg = Color(0xF7FAFAFC),
+    text = Color(0xFF1C1C1E),
+    sub = Color(0xFF1C1C1E).copy(alpha = 0.55f),
+    divider = Color.Black.copy(alpha = 0.08f),
+    danger = Color(0xFFD93025),
+    border = Color.Black.copy(alpha = 0.06f),
+)
+
+private val LocalMenuColors = staticCompositionLocalOf { DarkMenu }
 
 @Composable
 internal fun <T : Any> rememberLast(value: T?): T? {
@@ -115,6 +147,7 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
     val widgets = LocalWidgets.current
     val anchorHolder = LocalMenuAnchor.current
     val density = LocalDensity.current
+    val menuColors = if (isSystemInDarkTheme()) DarkMenu else LightMenu
 
     AnimatedVisibility(
         vm.menu != null,
@@ -155,6 +188,7 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                 .background(Color.Black.copy(alpha = 0.18f))
                 .clickable(interactionSource = noRipple(), indication = null) { vm.menu = null }
         ) {
+            CompositionLocalProvider(LocalMenuColors provides menuColors) {
             Layout(
                 modifier = Modifier.fillMaxSize(),
                 content = {
@@ -164,7 +198,9 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                                 enter = scaleIn(tween(160), initialScale = 0.85f),
                                 exit = scaleOut(tween(100), targetScale = 0.92f),
                             )
-                            .glass(RoundedCornerShape(20.dp), 0.26f)
+                            .shadow(18.dp, RoundedCornerShape(20.dp))
+                            .background(menuColors.bg, RoundedCornerShape(20.dp))
+                            .border(0.5.dp, menuColors.border, RoundedCornerShape(20.dp))
                             .clickable(interactionSource = noRipple(), indication = null) {}
                             .verticalScroll(rememberScrollState())
                             .padding(vertical = 6.dp)
@@ -179,7 +215,7 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                                 Spacer(Modifier.width(10.dp))
                             }
                             Text(
-                                title, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
+                                title, color = menuColors.text, fontSize = 15.sp, fontWeight = FontWeight.SemiBold,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis,
                             )
                         }
@@ -286,6 +322,7 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
                     card.place(x.roundToInt(), y.roundToInt())
                 }
             }
+            }
         }
     }
 }
@@ -294,12 +331,13 @@ fun ContextMenuOverlay(vm: LauncherViewModel) {
 private fun MenuDivider() {
     Box(
         Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp).height(1.dp)
-            .background(Color.White.copy(alpha = 0.15f))
+            .background(LocalMenuColors.current.divider)
     )
 }
 
 @Composable
 private fun MenuRow(text: String, icon: ImageBitmap? = null, danger: Boolean = false, onClick: () -> Unit) {
+    val c = LocalMenuColors.current
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -309,7 +347,7 @@ private fun MenuRow(text: String, icon: ImageBitmap? = null, danger: Boolean = f
             Spacer(Modifier.width(10.dp))
         }
         Text(
-            text, color = if (danger) Color(0xFFFF7A7A) else Color.White, fontSize = 14.sp,
+            text, color = if (danger) c.danger else c.text, fontSize = 14.sp,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
     }
