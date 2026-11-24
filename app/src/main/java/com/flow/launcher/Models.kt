@@ -42,6 +42,7 @@ data class LauncherSettings(
     val blur: Boolean = true,
     val doubleTapLock: Boolean = true,
     val hidden: Set<String> = emptySet(),
+    val drawerMode: Boolean = true,
 )
 
 data class DragState(val page: Int, val index: Int, val offset: Offset = Offset.Zero)
