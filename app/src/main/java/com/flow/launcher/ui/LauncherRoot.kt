@@ -234,21 +234,37 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
         }
     }
 
+    /** Which cell the dragged icon is over, and whether it's over an icon's centre (→ folder). */
+    fun target(d: DragState): Pair<Int, Boolean>? {
+        val s = vm.settings
+        val cw = (gridBounds.width - 2 * padPx) / s.cols
+        val ch = gridBounds.height / s.rows
+        if (cw <= 0f || ch <= 0f) return null
+        val center = d.pointer - d.grab + Offset(cw / 2, ch / 2)
+        if (!gridBounds.contains(center)) return null
+        val fx = (center.x - gridBounds.left - padPx) / cw
+        val fy = (center.y - gridBounds.top) / ch
+        val col = fx.toInt().coerceIn(0, s.cols - 1)
+        val row = fy.toInt().coerceIn(0, s.rows - 1)
+        val idx = row * s.cols + col
+        val dst = vm.layout.pages.getOrNull(pager.currentPage)?.getOrNull(idx)
+        val nearCentre = abs(fx - col - 0.5f) < 0.28f && abs(fy - row - 0.5f) < 0.28f
+        val sameCell = pager.currentPage == d.page && idx == d.index
+        val merge = nearCentre && !sameCell && d.group.isEmpty() && d.item is HomeItem.App && dst != null
+        return idx to merge
+    }
+
+    val hover: Pair<Int, Boolean>? = vm.drag?.let { target(it) }
+
     val drop: () -> Unit = {
         val d = vm.drag
         if (d != null) {
-            val s = vm.settings
-            val cw = (gridBounds.width - 2 * padPx) / s.cols
-            val ch = gridBounds.height / s.rows
-            val center = d.pointer - d.grab + Offset(cw / 2, ch / 2)
-            when {
-                dockBounds.contains(d.pointer) -> vm.endDrag(null, null, toDock = true)
-                gridBounds.contains(center) -> {
-                    val col = ((center.x - gridBounds.left - padPx) / cw).toInt().coerceIn(0, s.cols - 1)
-                    val row = ((center.y - gridBounds.top) / ch).toInt().coerceIn(0, s.rows - 1)
-                    vm.endDrag(pager.currentPage, row * s.cols + col, toDock = false)
-                }
-                else -> vm.endDrag(null, null, toDock = false)
+            if (dockBounds.contains(d.pointer)) {
+                vm.endDrag(null, null, toDock = true)
+            } else {
+                val tg = target(d)
+                if (tg != null) vm.endDrag(pager.currentPage, tg.first, toDock = false, merge = tg.second)
+                else vm.endDrag(null, null, toDock = false)
             }
         }
     }
@@ -282,7 +298,10 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
                 userScrollEnabled = vm.drag == null,
                 beyondViewportPageCount = 2,
             ) { page ->
-                PageGrid(vm, page, entry.value, { Offset(gridBounds.left + padPx, gridBounds.top) }, drop)
+                PageGrid(
+                    vm, page, entry.value, { Offset(gridBounds.left + padPx, gridBounds.top) }, drop,
+                    hover = hover, hoverPage = pager.currentPage,
+                )
             }
         }
         PageDots(vm.layout.pages.size, pager.currentPage)
@@ -318,6 +337,8 @@ private fun PageGrid(
     entry: Float,
     origin: () -> Offset,
     onDrop: () -> Unit,
+    hover: Pair<Int, Boolean>? = null,
+    hoverPage: Int = -1,
 ) {
     val s = vm.settings
     val slots = vm.layout.pages.getOrNull(page) ?: return
@@ -413,7 +434,18 @@ private fun PageGrid(
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                Box {
+                val folderHover = hover != null && hover.second && hoverPage == page && hover.first == index
+                if (folderHover) {
+                    // glowing frame = "drop here to make a folder"
+                    Box(
+                        Modifier.size(iconSize * 1.3f)
+                            .glass(RoundedCornerShape(iconSize * 0.38f), 0.32f)
+                    )
+                }
+                Box(Modifier.graphicsLayer {
+                    val sc = if (folderHover) 1.08f else 1f
+                    scaleX = sc; scaleY = sc
+                }) {
                     when (item) {
                         is HomeItem.App -> vm.appMap[item.key]?.let { app ->
                             AppIcon(app, iconSize, s.showLabels) {

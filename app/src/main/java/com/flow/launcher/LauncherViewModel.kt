@@ -306,10 +306,11 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         layout = layout.copy(pages = layout.pages + listOf(emptyPage()))
     }
 
-    fun endDrag(targetPage: Int?, targetIndex: Int?, toDock: Boolean) {
+    fun endDrag(targetPage: Int?, targetIndex: Int?, toDock: Boolean, merge: Boolean = false) {
         val d = drag ?: return
         drag = null
         if (d.group.isNotEmpty()) { moveGroup(d, targetPage, targetIndex, toDock); return }
+
         if (toDock) {
             val item = d.item
             when {
@@ -324,6 +325,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             editPages { }
             return
         }
+
         if (targetPage == null || targetIndex == null ||
             (targetPage == d.page && targetIndex == d.index) ||
             layout.widgets.any { it.covers(targetPage, targetIndex) }
@@ -331,30 +333,97 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             editPages { }
             return
         }
+
         editPages { p ->
             while (p.size <= targetPage) p += emptyPage()
             val src = p[d.page][d.index] ?: return@editPages
             val dst = p[targetPage][targetIndex]
-            when {
-                dst == null -> {
-                    p[targetPage][targetIndex] = src
-                    p[d.page][d.index] = null
+
+            // Dropped on the centre of an icon → make / add to folder
+            if (merge && src is HomeItem.App && dst != null) {
+                p[targetPage][targetIndex] = when (dst) {
+                    is HomeItem.App -> {
+                        val keys = listOf(dst.key, src.key)
+                        HomeItem.Folder(newId(), autoName(keys), keys)
+                    }
+                    is HomeItem.Folder -> dst.copy(apps = dst.apps + src.key)
                 }
-                src is HomeItem.App && dst is HomeItem.App -> {
-                    val keys = listOf(dst.key, src.key)
-                    p[targetPage][targetIndex] = HomeItem.Folder(newId(), autoName(keys), keys)
-                    p[d.page][d.index] = null
-                }
-                src is HomeItem.App && dst is HomeItem.Folder -> {
-                    p[targetPage][targetIndex] = dst.copy(apps = dst.apps + src.key)
-                    p[d.page][d.index] = null
-                }
-                else -> {
-                    p[targetPage][targetIndex] = src
-                    p[d.page][d.index] = dst
-                }
+                p[d.page][d.index] = null
+                return@editPages
+            }
+
+            // Otherwise → move apps aside
+            moveWithShift(p, d.page, d.index, targetPage, targetIndex)
+        }
+    }
+
+    /** Puts the item at the target cell and shifts the others along to make room. */
+    private fun moveWithShift(p: Pages, fromPage: Int, fromIndex: Int, toPage: Int, toIndex: Int) {
+        val item = p[fromPage][fromIndex] ?: return
+        val clock = layout.clock.visible
+        val widgets = layout.widgets
+        val page = p[toPage]
+
+        // Cells that can take part in shifting (skip widget cells and the clock area)
+        fun usable(i: Int): Boolean {
+            if (widgets.any { it.covers(toPage, i) }) return false
+            val inClock = toPage == 0 && clock && i < settings.cols * 2
+            return !inClock || i == toIndex || (fromPage == toPage && i == fromIndex)
+        }
+        val cells = (0 until slotCount).filter { usable(it) }
+        val t = cells.indexOf(toIndex)
+        if (t < 0) return
+
+        // Same page: classic reorder – everything between old and new spot slides by one
+        if (fromPage == toPage) {
+            val s = cells.indexOf(fromIndex)
+            if (s >= 0) {
+                val seq = cells.map { page[it] }.toMutableList()
+                val moving = seq.removeAt(s)
+                seq.add(t, moving)
+                cells.forEachIndexed { k, idx -> page[idx] = seq[k] }
+                return
             }
         }
+
+        // Different page: push items forward until a free cell is found
+        p[fromPage][fromIndex] = null
+        if (page[toIndex] == null) {
+            page[toIndex] = item
+            return
+        }
+        var carry: HomeItem? = item
+        var k = t
+        while (carry != null && k < cells.size) {
+            val idx = cells[k]
+            val previous = page[idx]
+            page[idx] = carry
+            carry = previous
+            k++
+        }
+        if (carry != null) overflowToNextPage(p, toPage, carry)
+    }
+
+    /** Page full: last item goes to the page right after (or a new page inserted right after). */
+    private fun overflowToNextPage(p: Pages, fromPage: Int, item: HomeItem) {
+        val next = fromPage + 1
+        if (next < p.size) {
+            val free = p[next].indices.firstOrNull {
+                p[next][it] == null && !blocked(next, it, layout.clock.visible, layout.widgets)
+            }
+            if (free != null) {
+                p[next][free] = item
+                return
+            }
+        }
+        // Insert a brand-new page directly after the current one
+        p.add(next, emptyPage().also { it[0] = item })
+        if (layout.widgets.any { it.page >= next }) {
+            layout = layout.copy(
+                widgets = layout.widgets.map { if (it.page >= next) it.copy(page = it.page + 1) else it }
+            )
+        }
+        toast("Moved last app to the next page")
     }
 
     /** Moves all selected items together, filling free cells from the drop point onward. */
