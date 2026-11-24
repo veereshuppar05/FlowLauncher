@@ -354,7 +354,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        if (targetPage == null || targetIndex == null) {
+        val dropPage = targetPage
+        val dropIndex = targetIndex
+        if (dropPage == null || dropIndex == null) {
             editPages { }
             return
         }
@@ -368,9 +370,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 }
             }
             // 2. drop them in order starting at the target cell
-            while (p.size <= targetPage) p += emptyPage()
-            var pi = targetPage
-            var i = targetIndex
+            while (p.size <= dropPage) p += emptyPage()
+            var pi = dropPage
+            var i = dropIndex
             for (item in d.group) {
                 while (true) {
                     if (pi >= p.size) p += emptyPage()
