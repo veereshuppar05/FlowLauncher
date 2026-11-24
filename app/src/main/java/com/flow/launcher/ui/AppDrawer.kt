@@ -19,6 +19,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -34,22 +36,33 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.flow.launcher.LauncherViewModel
 import com.flow.launcher.MenuTarget
+import kotlinx.coroutines.delay
 
 @Composable
 fun AppDrawer(vm: LauncherViewModel) {
+    val drawerMode = vm.settings.drawerMode
     var query by rememberSaveable { mutableStateOf("") }
     var category by rememberSaveable { mutableStateOf<String?>(null) }
     val all = vm.visibleApps
     val categories = remember(all) { all.map { it.category }.distinct().sorted() }
     val q = query.trim()
-    val shown = remember(all, q, category) {
-        all.filter { a ->
+    val shown = remember(all, q, category, drawerMode) {
+        if (!drawerMode && q.isEmpty()) emptyList()
+        else all.filter { a ->
             (category == null || a.category == category) &&
                 (q.isEmpty() || a.label.contains(q, ignoreCase = true) ||
                     a.label.split(' ').joinToString("") { it.take(1) }.startsWith(q, ignoreCase = true))
         }
     }
     val iconSize = (52 * vm.settings.iconScale).dp
+    val focus = remember { FocusRequester() }
+
+    LaunchedEffect(drawerMode) {
+        if (!drawerMode) {
+            delay(250)
+            runCatching { focus.requestFocus() }
+        }
+    }
 
     // Pull down at the top of the list to close
     val closeOnPull = remember {
@@ -69,8 +82,11 @@ fun AppDrawer(vm: LauncherViewModel) {
 
     Column(
         Modifier.fillMaxSize()
-            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                if (!drawerMode && q.isEmpty()) vm.drawerOpen = false
+            }
             .statusBarsPadding()
+            .imePadding()
             .nestedScroll(closeOnPull),
     ) {
         Box(
@@ -91,6 +107,7 @@ fun AppDrawer(vm: LauncherViewModel) {
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
             keyboardActions = KeyboardActions(onGo = { shown.firstOrNull()?.let(vm::launch) }),
             modifier = Modifier.padding(horizontal = 16.dp).fillMaxWidth()
+                .focusRequester(focus)
                 .glass(RoundedCornerShape(26.dp)).padding(horizontal = 20.dp, vertical = 14.dp),
             decorationBox = { inner ->
                 Box {
@@ -100,12 +117,16 @@ fun AppDrawer(vm: LauncherViewModel) {
             },
         )
 
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            item { GlassPill("All", selected = category == null) { category = null } }
-            items(categories) { c -> GlassPill(c, selected = category == c) { category = c } }
+        if (drawerMode) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                item { GlassPill("All", selected = category == null) { category = null } }
+                items(categories) { c -> GlassPill(c, selected = category == c) { category = c } }
+            }
+        } else {
+            Spacer(Modifier.height(16.dp))
         }
 
         LazyVerticalGrid(
@@ -120,7 +141,10 @@ fun AppDrawer(vm: LauncherViewModel) {
                     AppIcon(app, iconSize, vm.settings.showLabels,
                         onLongClick = { vm.menu = MenuTarget.DrawerApp(app) }) { vm.launch(app) }
                 }
-                item(span = { GridItemSpan(maxLineSpan) }) { SectionTitle("All apps") }
+                if (drawerMode) item(span = { GridItemSpan(maxLineSpan) }) { SectionTitle("All apps") }
+            }
+            if (!drawerMode && q.isNotEmpty() && shown.isEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) { SectionTitle("No apps found") }
             }
             items(shown, key = { it.key }) { app ->
                 AppIcon(app, iconSize, vm.settings.showLabels,
