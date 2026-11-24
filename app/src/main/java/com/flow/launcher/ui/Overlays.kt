@@ -206,8 +206,6 @@ private fun buildActions(
 
     return when (t) {
         is MenuTarget.HomeApp -> listOf(timer(t.app), info(t.app), lock(t.app), uninstall(t.app)) to buildList {
-            add(MenuAction(MenuIcons.AddBox, "Add to dock") { vm.addToDock(t.page, t.index, t.app.key) })
-            add(MenuAction(MenuIcons.Next, "Move to next page") { vm.moveToNextPage(t.page, t.index) })
             if (drawerMode) add(MenuAction(MenuIcons.Close, "Remove from home") { vm.removeFromHome(t.page, t.index) })
         }
         is MenuTarget.DockApp -> listOf(timer(t.app), info(t.app), uninstall(t.app)) to listOf(
@@ -228,9 +226,7 @@ private fun buildActions(
             add(MenuAction(MenuIcons.Edit, "Rename") { vm.menu = null; vm.openFolderId = t.folder.id })
             add(MenuAction(MenuIcons.Apps, "Ungroup") { vm.ungroup(t.page, t.index) })
             if (drawerMode) add(MenuAction(MenuIcons.Close, "Remove") { vm.removeFromHome(t.page, t.index) })
-        } to listOf(
-            MenuAction(MenuIcons.Next, "Move to next page") { vm.moveToNextPage(t.page, t.index) },
-        )
+        } to emptyList()
         is MenuTarget.HomeWidget -> {
             val id = t.widget.appWidgetId
             listOf(
