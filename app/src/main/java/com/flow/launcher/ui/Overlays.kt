@@ -91,7 +91,7 @@ fun FolderOverlay(vm: LauncherViewModel) {
                         verticalArrangement = Arrangement.spacedBy(18.dp),
                     ) {
                         items(f.apps.mapNotNull { vm.appMap[it] }, key = { it.key }) { app ->
-                            AppIcon(app, 56.dp, true,
+                            AppIcon(app, rememberIconSize(vm), true,
                                 onLongClick = { vm.menu = MenuTarget.FolderApp(f.id, app) }) { vm.launch(app) }
                         }
                     }

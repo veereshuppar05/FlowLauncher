@@ -49,6 +49,21 @@ import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
+private val GridPad = 12.dp
+
+/** One icon size for the whole launcher (home, dock, drawer, folders, private space, drag). */
+@Composable
+internal fun rememberIconSize(vm: LauncherViewModel): Dp {
+    val density = LocalDensity.current
+    val s = vm.settings
+    val g = vm.gridSize
+    if (g.width <= 0f || g.height <= 0f) return (56 * s.iconScale).dp
+    val pad = with(density) { GridPad.toPx() }
+    val cw = (g.width - 2 * pad) / s.cols
+    val ch = g.height / s.rows
+    return with(density) { (minOf(cw, ch) * 0.62f * s.iconScale).toDp() }.coerceAtMost(76.dp)
+}
+
 // ======================= Root =======================
 @Composable
 fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur: (Int) -> Unit) {
@@ -353,13 +368,13 @@ private fun PageGrid(
     val haptic = LocalHapticFeedback.current
     val widgets = LocalWidgets.current
     val anchor = LocalMenuAnchor.current
-    BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+    BoxWithConstraints(Modifier.fillMaxSize().padding(horizontal = GridPad)) {
         val cellW = maxWidth / s.cols
         val cellH = maxHeight / s.rows
         val density = LocalDensity.current
         val cw = with(density) { cellW.toPx() }
         val ch = with(density) { cellH.toPx() }
-        val iconSize = (minOf(cellW, cellH) * 0.62f * s.iconScale).coerceAtMost(76.dp)
+        val iconSize = rememberIconSize(vm)
         val clock = vm.layout.clock
 
         if (page == 0 && clock.visible) FlowClock(vm, maxWidth, maxHeight, entry)
@@ -496,7 +511,7 @@ private fun DragGhost(vm: LauncherViewModel, d: DragState) {
     val chPx = g.height / s.rows
     val w = with(density) { cwPx.toDp() }
     val h = with(density) { chPx.toDp() }
-    val iconSize = (minOf(w, h) * 0.62f * s.iconScale).coerceAtMost(76.dp)
+    val iconSize = rememberIconSize(vm)
     Box(
         Modifier
             .offset { IntOffset((d.pointer.x - d.grab.x).roundToInt(), (d.pointer.y - d.grab.y).roundToInt()) }
@@ -622,7 +637,7 @@ private fun Dock(vm: LauncherViewModel, insertAt: Int?, onDrop: () -> Unit, onBo
     if (keys.isEmpty() && d == null) return
     // Hide the dock icon that is being dragged (once the menu has closed)
     val draggingIndex = if (d != null && d.page == LauncherViewModel.DOCK_PAGE && vm.menu == null) d.index else -1
-    val iconSize = (54 * vm.settings.iconScale).dp
+    val iconSize = rememberIconSize(vm)
     Row(
         Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth()
             .heightIn(min = 78.dp)

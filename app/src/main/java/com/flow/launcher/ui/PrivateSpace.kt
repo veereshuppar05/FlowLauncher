@@ -106,13 +106,14 @@ fun PrivateSpaceOverlay(vm: LauncherViewModel) {
                     color = Color.White.copy(alpha = 0.85f), fontSize = 14.sp,
                 )
             } else {
+                val iconSize = rememberIconSize(vm)
                 LazyVerticalGrid(
-                    GridCells.Fixed(4),
+                    GridCells.Adaptive(minSize = iconSize + 14.dp),
                     Modifier.heightIn(max = 440.dp),
                     verticalArrangement = Arrangement.spacedBy(18.dp),
                 ) {
                     items(apps, key = { it.key }) { app ->
-                        AppIcon(app, 52.dp, true, onLongClick = { vm.menu = MenuTarget.PrivateApp(app) }) {
+                        AppIcon(app, iconSize, true, onLongClick = { vm.menu = MenuTarget.PrivateApp(app) }) {
                             vm.launch(app)
                         }
                     }

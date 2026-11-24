@@ -54,7 +54,7 @@ fun AppDrawer(vm: LauncherViewModel) {
                     a.label.split(' ').joinToString("") { it.take(1) }.startsWith(q, ignoreCase = true))
         }
     }
-    val iconSize = (52 * vm.settings.iconScale).dp
+    val iconSize = rememberIconSize(vm)
     val focus = remember { FocusRequester() }
 
     LaunchedEffect(drawerMode) {
