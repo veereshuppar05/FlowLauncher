@@ -352,7 +352,9 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
                 pager,
                 Modifier.fillMaxSize(),
                 userScrollEnabled = dragInfo == null,
-                beyondViewportPageCount = 2,
+                // Keep only the current page and its immediate neighbors composed.
+                // Each page contains multiple icon animations and may host Android widgets.
+                beyondViewportPageCount = 1,
             ) { page ->
                 PageGrid(
                     vm = vm,
