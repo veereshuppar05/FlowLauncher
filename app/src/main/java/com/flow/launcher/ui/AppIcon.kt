@@ -62,14 +62,13 @@ val LabelStyle = TextStyle(
 )
 
 @Composable
-private fun bounceScale(interaction: MutableInteractionSource): Float {
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        if (pressed) 0.92f else 1f,
-        spring(dampingRatio = 0.88f, stiffness = 850f),
+private fun bounceScale(interaction: MutableInteractionSource): State<Float> {
+    val pressed = interaction.collectIsPressedAsState()
+    return animateFloatAsState(
+        targetValue = if (pressed.value) 0.92f else 1f,
+        animationSpec = spring(dampingRatio = 0.88f, stiffness = 850f),
         label = "pressScale",
     )
-    return scale
 }
 
 @Composable
@@ -108,7 +107,7 @@ fun AppIcon(
     Column(
         modifier
             .onGloballyPositioned { bounds[0] = it.boundsInRoot() }
-            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .graphicsLayer { scaleX = scale.value; scaleY = scale.value }
             .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
@@ -147,7 +146,7 @@ fun FolderIcon(
     val shape = LocalIconShape.current
     Column(
         Modifier
-            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .graphicsLayer { scaleX = scale.value; scaleY = scale.value }
             .clickable(interactionSource = interaction, indication = null, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
