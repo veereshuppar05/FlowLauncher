@@ -241,13 +241,9 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
     val padPx = with(density) { GridPad.toPx() }
     val edgePx = with(density) { 36.dp.toPx() }
     val pager = rememberPagerState { vm.layout.pages.size }
-    val pageSnapSpec = remember {
-        tween<Float>(durationMillis = 240, easing = FastOutSlowInEasing)
-    }
-    val pagerFlingBehavior = PagerDefaults.flingBehavior(
-        state = pager,
-        snapAnimationSpec = pageSnapSpec,
-    )
+    // Keep the pager's native spring + velocity-based settling. A fixed-duration
+    // tween feels detached from the swipe speed and unlike the system launcher.
+    val pagerFlingBehavior = PagerDefaults.flingBehavior(state = pager)
     // One shared clock drives all edit-mode icon/widget tilts instead of one per item.
     val editWiggle: State<Float> = if (vm.editMode) {
         val transition = rememberInfiniteTransition(label = "editWiggle")
@@ -266,10 +262,10 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
     var gridBounds by remember { mutableStateOf(Rect.Zero) }
     var dockBounds by remember { mutableStateOf(Rect.Zero) }
 
-    LaunchedEffect(vm.homeTick) { if (vm.homeTick > 0) pager.animateScrollToPage(0, animationSpec = pageSnapSpec) }
+    LaunchedEffect(vm.homeTick) { if (vm.homeTick > 0) pager.animateScrollToPage(0) }
     LaunchedEffect(vm.scrollTo) {
         vm.scrollTo?.let {
-            pager.animateScrollToPage(it, animationSpec = pageSnapSpec)
+            pager.animateScrollToPage(it)
             vm.scrollTo = null
         }
     }
@@ -350,7 +346,7 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
                 vm.addEmptyPage()
             }
             if (targetPage in 0 until vm.layout.pages.size) {
-                pager.animateScrollToPage(targetPage, animationSpec = pageSnapSpec)
+                pager.animateScrollToPage(targetPage)
                 delay(400)
             }
         }
