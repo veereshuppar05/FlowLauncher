@@ -65,9 +65,9 @@ val LabelStyle = TextStyle(
 private fun bounceScale(interaction: MutableInteractionSource): Float {
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
-        if (pressed) 0.84f else 1f,
-        spring(dampingRatio = 0.4f, stiffness = 420f),
-        label = "bounce",
+        if (pressed) 0.92f else 1f,
+        spring(dampingRatio = 0.88f, stiffness = 850f),
+        label = "pressScale",
     )
     return scale
 }
