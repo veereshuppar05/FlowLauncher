@@ -488,7 +488,6 @@ private fun PageGrid(
                             scaleX = sc; scaleY = sc
                             alpha = if (isDragged) 0f else fade
                         }
-                        .then(if (vm.editMode && !isDragged) Modifier.wiggle(index, editWiggle) else Modifier)
                         .pointerInput(page, index, item, s.cols, s.rows) {
                             detectDragGesturesAfterLongPress(
                                 onDragStart = { off ->
