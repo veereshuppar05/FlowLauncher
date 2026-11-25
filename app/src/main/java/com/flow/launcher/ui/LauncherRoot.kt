@@ -26,7 +26,6 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -106,24 +105,35 @@ fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur
             }
             val overlay = vm.drawerOpen || (vm.openFolderId != null && !folderDragOut) || vm.showSettings ||
                 vm.widgetPickerOpen || vm.privateOpen
-            val blur by animateFloatAsState(if (overlay) 1f else 0f, tween(300), label = "blur")
-            LaunchedEffect(blur, vm.settings.blur) {
-                setWindowBlur(if (vm.settings.blur) (blur * 80).toInt() else 0)
+            val overlayProgress = animateFloatAsState(
+                targetValue = if (overlay) 1f else 0f,
+                animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing),
+                label = "overlayProgress",
+            )
+            // Apply wallpaper blur once per overlay change. Avoid updating the native
+            // window blur on every animation frame or stacking a second full-screen blur.
+            LaunchedEffect(overlay, vm.settings.blur) {
+                setWindowBlur(if (vm.settings.blur && overlay) 48 else 0)
             }
             val ghostOn by remember { derivedStateOf { vm.drag != null && vm.menu == null } }
 
             Box(Modifier.fillMaxSize()) {
                 HomeScreen(
                     vm,
-                    Modifier.fillMaxSize()
-                        .graphicsLayer {
-                            val s = 1f - 0.08f * blur
-                            scaleX = s; scaleY = s; alpha = 1f - 0.5f * blur
-                        }
-                        .then(if (vm.settings.blur && blur > 0.01f) Modifier.blur((20 * blur).dp) else Modifier),
+                    Modifier.fillMaxSize().graphicsLayer {
+                        val progress = overlayProgress.value
+                        val scale = 1f - 0.08f * progress
+                        scaleX = scale
+                        scaleY = scale
+                        alpha = 1f - 0.5f * progress
+                    },
                 ) { g -> performAction(vm.settings.gestures[g] ?: GestureAction.NONE, activity, vm) }
 
-                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f * blur)))
+                Box(
+                    Modifier.fillMaxSize()
+                        .graphicsLayer { alpha = 0.28f * overlayProgress.value }
+                        .background(Color.Black),
+                )
 
                 AnimatedVisibility(
                     vm.drawerOpen,
@@ -505,7 +515,11 @@ private fun PageGrid(
                         else -> pos.animateTo(goal, spring(dampingRatio = 0.90f, stiffness = 700f))
                     }
                 }
-                val fade by animateFloatAsState(if (leaving) 0f else 1f, tween(180), label = "fade")
+                val fade = animateFloatAsState(
+                    targetValue = if (leaving) 0f else 1f,
+                    animationSpec = tween(180),
+                    label = "fade",
+                )
                 val folderHover = hover != null && hover.second && hoverPage == page && hover.first == index
 
                 Box(
@@ -513,9 +527,11 @@ private fun PageGrid(
                         .offset { pos.value }
                         .size(cellW, cellH)
                         .graphicsLayer {
-                            val sc = 0.6f + 0.4f * fade
-                            scaleX = sc; scaleY = sc
-                            alpha = if (isDragged) 0f else fade
+                            val fadeValue = fade.value
+                            val scale = 0.6f + 0.4f * fadeValue
+                            scaleX = scale
+                            scaleY = scale
+                            alpha = if (isDragged) 0f else fadeValue
                         }
                         .pointerInput(page, index, item, s.cols, s.rows) {
                             detectDragGesturesAfterLongPress(
