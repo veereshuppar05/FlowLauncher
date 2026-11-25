@@ -41,7 +41,26 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        requestPreferredRefreshRate()
         vm.onResume()
+    }
+
+    /**
+     * Ask the active display for its highest supported refresh rate.
+     * Android may still choose a lower mode for battery, thermal, or user policy.
+     */
+    private fun requestPreferredRefreshRate() {
+        val refreshRate = window.decorView.display
+            ?.supportedModes
+            ?.maxOfOrNull { it.refreshRate }
+            ?: return
+        if (refreshRate < 90f) return
+
+        val params = window.attributes
+        if (params.preferredRefreshRate != refreshRate) {
+            params.preferredRefreshRate = refreshRate
+            window.attributes = params
+        }
     }
 
     override fun onPause() {
