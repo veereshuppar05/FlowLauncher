@@ -43,7 +43,7 @@ fun AppDrawer(vm: LauncherViewModel) {
     val drawerMode = vm.settings.drawerMode
     var query by rememberSaveable { mutableStateOf("") }
     var category by rememberSaveable { mutableStateOf<String?>(null) }
-    val all = vm.visibleApps
+    val all = remember(vm.apps, vm.settings.hidden) { vm.visibleApps }
     val categories = remember(all) { all.map { it.category }.distinct().sorted() }
     val q = query.trim()
     val shown = remember(all, q, category, drawerMode) {
