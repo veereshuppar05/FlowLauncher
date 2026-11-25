@@ -51,6 +51,7 @@ import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 internal val GridPad = 16.dp
 
@@ -218,6 +219,21 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
     val padPx = with(density) { GridPad.toPx() }
     val edgePx = with(density) { 36.dp.toPx() }
     val pager = rememberPagerState { vm.layout.pages.size }
+    // One shared clock drives all edit-mode icon/widget tilts instead of one per item.
+    val editWiggle: State<Float> = if (vm.editMode) {
+        val transition = rememberInfiniteTransition(label = "editWiggle")
+        transition.animateFloat(
+            initialValue = 0f,
+            targetValue = 6.2831855f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(durationMillis = 900, easing = LinearEasing),
+                repeatMode = RepeatMode.Restart,
+            ),
+            label = "editWiggle",
+        )
+    } else {
+        remember { mutableFloatStateOf(0f) }
+    }
     var gridBounds by remember { mutableStateOf(Rect.Zero) }
     var dockBounds by remember { mutableStateOf(Rect.Zero) }
 
@@ -365,6 +381,7 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
                     hover = hover,
                     preview = if (page == pager.currentPage) preview else emptyMap(),
                     hoverPage = pager.currentPage,
+                    editWiggle = editWiggle,
                 )
             }
         }
@@ -376,16 +393,11 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
     }
 }
 
-@Composable
-private fun Modifier.wiggle(seed: Int): Modifier {
-    val inf = rememberInfiniteTransition(label = "wiggle")
-    val r by inf.animateFloat(
-        -1.6f, 1.6f,
-        infiniteRepeatable(tween(120 + (abs(seed) % 3) * 25), RepeatMode.Reverse),
-        label = "r",
-    )
-    return graphicsLayer { rotationZ = r }
-}
+private fun Modifier.wiggle(seed: Int, phase: State<Float>): Modifier =
+    graphicsLayer {
+        // Read the shared animation state in the layer block so icon composables don't recompose each frame.
+        rotationZ = sin(phase.value + seed * 0.73f) * 1.2f
+    }
 
 @Composable
 private fun PageGrid(
@@ -397,6 +409,7 @@ private fun PageGrid(
     hover: Pair<Int, Boolean>?,
     preview: Map<Int, Int>,
     hoverPage: Int,
+    editWiggle: State<Float>,
 ) {
     val s = vm.settings
     val slots = vm.layout.pages.getOrNull(page) ?: return
@@ -422,7 +435,7 @@ private fun PageGrid(
                         .size(cellW * w.spanX, cellH * w.spanY)
                         .padding(6.dp)
                         .onGloballyPositioned { vm.widgetBounds[w.appWidgetId] = it.boundsInRoot() }
-                        .then(if (vm.editMode) Modifier.wiggle(w.appWidgetId) else Modifier),
+                        .then(if (vm.editMode) Modifier.wiggle(w.appWidgetId, editWiggle) else Modifier),
                 ) {
                     if (widgets != null) {
                         WidgetHostCompose(widgets, w.appWidgetId) {
@@ -475,7 +488,7 @@ private fun PageGrid(
                             scaleX = sc; scaleY = sc
                             alpha = if (isDragged) 0f else fade
                         }
-                        .then(if (vm.editMode && !isDragged) Modifier.wiggle(index) else Modifier)
+                        .then(if (vm.editMode && !isDragged) Modifier.wiggle(index, editWiggle) else Modifier)
                         .pointerInput(page, index, item, s.cols, s.rows) {
                             detectDragGesturesAfterLongPress(
                                 onDragStart = { off ->
