@@ -406,9 +406,18 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
             }
         }
         PageDots(vm.layout.pages.size, pager.currentPage)
-        Dock(vm, dragInfo, dockHover, drop) { dockBounds = it }
-        AnimatedVisibility(vm.editMode) {
-            if (vm.selected.isEmpty()) EditBar(vm) else SelectionBar(vm)
+        // Keep the bottom slot at the dock's normal height in edit mode.
+        // Replacing the dock (rather than adding another row below it) prevents
+        // the home grid from being remeasured and shifting the icons upward.
+        Box(
+            Modifier.fillMaxWidth().height(98.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (vm.editMode) {
+                if (vm.selected.isEmpty()) EditBar(vm) else SelectionBar(vm)
+            } else {
+                Dock(vm, dragInfo, dockHover, drop) { dockBounds = it }
+            }
         }
     }
 }
