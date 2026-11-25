@@ -16,6 +16,7 @@ import androidx.compose.foundation.gestures.*
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,6 +40,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.*
@@ -80,10 +82,20 @@ private fun HomeItem.uid(): String = when (this) {
 @Composable
 fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur: (Int) -> Unit) {
     val activity = LocalContext.current as Activity
+    val systemViewConfiguration = LocalViewConfiguration.current
+    val responsiveViewConfiguration = remember(systemViewConfiguration) {
+        object : androidx.compose.ui.platform.ViewConfiguration by systemViewConfiguration {
+            override val longPressTimeoutMillis: Long =
+                if (systemViewConfiguration.longPressTimeoutMillis ==
+                    android.view.ViewConfiguration.getLongPressTimeout().toLong()
+                ) 350L else systemViewConfiguration.longPressTimeoutMillis
+        }
+    }
     val badgeCounts by BadgeService.counts.collectAsState()
     val menuAnchor = remember { MenuAnchor() }
     MaterialTheme(colorScheme = darkColorScheme()) {
         CompositionLocalProvider(
+            LocalViewConfiguration provides responsiveViewConfiguration,
             LocalIconShape provides vm.settings.iconShape.toShape(),
             LocalBadges provides (if (vm.settings.badges) badgeCounts else emptyMap()),
             LocalWidgets provides widgets,
@@ -115,8 +127,8 @@ fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur
 
                 AnimatedVisibility(
                     vm.drawerOpen,
-                    enter = fadeIn(tween(220)) + slideInVertically(tween(320)) { it / 4 },
-                    exit = fadeOut(tween(180)) + slideOutVertically(tween(260)) { it / 4 },
+                    enter = fadeIn(tween(200)) + slideInVertically(tween(240, easing = FastOutSlowInEasing)) { it / 4 },
+                    exit = fadeOut(tween(160)) + slideOutVertically(tween(190, easing = FastOutSlowInEasing)) { it / 4 },
                 ) { AppDrawer(vm) }
 
                 FolderOverlay(vm)
@@ -129,8 +141,8 @@ fun LauncherRoot(vm: LauncherViewModel, widgets: WidgetController, setWindowBlur
 
                 AnimatedVisibility(
                     vm.widgetPickerOpen,
-                    enter = fadeIn() + slideInVertically { it / 5 },
-                    exit = fadeOut() + slideOutVertically { it / 5 },
+                    enter = fadeIn(tween(180)) + slideInVertically(tween(230, easing = FastOutSlowInEasing)) { it / 5 },
+                    exit = fadeOut(tween(140)) + slideOutVertically(tween(180, easing = FastOutSlowInEasing)) { it / 5 },
                 ) { WidgetPicker(vm, widgets) }
 
                 AnimatedVisibility(
@@ -219,6 +231,13 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
     val padPx = with(density) { GridPad.toPx() }
     val edgePx = with(density) { 36.dp.toPx() }
     val pager = rememberPagerState { vm.layout.pages.size }
+    val pageSnapSpec = remember {
+        tween<Float>(durationMillis = 240, easing = FastOutSlowInEasing)
+    }
+    val pagerFlingBehavior = PagerDefaults.flingBehavior(
+        state = pager,
+        snapAnimationSpec = pageSnapSpec,
+    )
     // One shared clock drives all edit-mode icon/widget tilts instead of one per item.
     val editWiggle: State<Float> = if (vm.editMode) {
         val transition = rememberInfiniteTransition(label = "editWiggle")
@@ -237,10 +256,10 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
     var gridBounds by remember { mutableStateOf(Rect.Zero) }
     var dockBounds by remember { mutableStateOf(Rect.Zero) }
 
-    LaunchedEffect(vm.homeTick) { if (vm.homeTick > 0) pager.animateScrollToPage(0) }
+    LaunchedEffect(vm.homeTick) { if (vm.homeTick > 0) pager.animateScrollToPage(0, animationSpec = pageSnapSpec) }
     LaunchedEffect(vm.scrollTo) {
         vm.scrollTo?.let {
-            pager.animateScrollToPage(it)
+            pager.animateScrollToPage(it, animationSpec = pageSnapSpec)
             vm.scrollTo = null
         }
     }
@@ -321,7 +340,7 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
                 vm.addEmptyPage()
             }
             if (targetPage in 0 until vm.layout.pages.size) {
-                pager.animateScrollToPage(targetPage)
+                pager.animateScrollToPage(targetPage, animationSpec = pageSnapSpec)
                 delay(400)
             }
         }
@@ -365,12 +384,13 @@ private fun HomeScreen(vm: LauncherViewModel, modifier: Modifier, onGesture: (Ge
             }
         ) {
             HorizontalPager(
-                pager,
-                Modifier.fillMaxSize(),
+                state = pager,
+                modifier = Modifier.fillMaxSize(),
                 userScrollEnabled = dragInfo == null,
                 // Keep only the current page and its immediate neighbors composed.
                 // Each page contains multiple icon animations and may host Android widgets.
                 beyondViewportPageCount = 1,
+                flingBehavior = pagerFlingBehavior,
             ) { page ->
                 PageGrid(
                     vm = vm,
@@ -473,7 +493,7 @@ private fun PageGrid(
                             wasDragged[0] = false
                             pos.snapTo(goal)
                         }
-                        else -> pos.animateTo(goal, spring(dampingRatio = 0.82f, stiffness = 420f))
+                        else -> pos.animateTo(goal, spring(dampingRatio = 0.90f, stiffness = 700f))
                     }
                 }
                 val fade by animateFloatAsState(if (leaving) 0f else 1f, tween(180), label = "fade")
